@@ -1,0 +1,32 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Local user settings
+.h264tt_settings.json
+
+# Python / tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Packaging / build artifacts
+*.egg-info/
+build/
+dist/
+
+# Native compiled helper
+h264tt/native/extract_mvs
+
+# Generated analysis artifacts
+*.analysis.json
+*.info
+*_stats.txt
+*_qp_size_plots.png
+*_mb_types.txt
+*_encoded.h264
+*_mb_overlay.mp4
+
+
+# Local AI/session notes
+.sisyphus/
