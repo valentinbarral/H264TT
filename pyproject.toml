@@ -9,6 +9,7 @@ description = "Teaching tool to visualize low-level H.264 macroblock parameters"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "av>=12.0",
     "matplotlib>=3.8",
     "numpy>=1.26",
     "opencv-python-headless>=4.10",

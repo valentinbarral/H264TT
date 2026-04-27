@@ -6,13 +6,6 @@ import json
 import cv2  # type: ignore[attr-defined]
 
 
-NATIVE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "native"))
-MOTION_VECTOR_EXTRACTOR_SOURCE = os.path.join(NATIVE_DIR, "extract_mvs.c")
-MOTION_VECTOR_EXTRACTOR_BINARY = os.path.join(
-    NATIVE_DIR, "extract_mvs.exe" if sys.platform == "win32" else "extract_mvs"
-)
-
-
 def create_yuv_from_mp4(
     input_mp4, output_yuv, width=720, height=398, fps=25, ffmpeg_path="ffmpeg"
 ):
@@ -137,77 +130,6 @@ class MBVisualizer:
             "qp_values": [],
             "motion_vectors": [],
         }
-
-    def _ensure_motion_vector_extractor(self):
-        if not os.path.exists(MOTION_VECTOR_EXTRACTOR_SOURCE):
-            print(
-                f"Advertencia: no se encontró el extractor de motion vectors: {MOTION_VECTOR_EXTRACTOR_SOURCE}"
-            )
-            return None
-
-        # Buscar binario preexistente (con o sin extensión de plataforma)
-        binary_names = [MOTION_VECTOR_EXTRACTOR_BINARY]
-        if sys.platform == "win32":
-            binary_names.append(MOTION_VECTOR_EXTRACTOR_BINARY.replace(".exe", ""))
-        else:
-            binary_names.append(MOTION_VECTOR_EXTRACTOR_BINARY + ".exe")
-
-        source_mtime = os.path.getmtime(MOTION_VECTOR_EXTRACTOR_SOURCE)
-        for candidate in binary_names:
-            if os.path.exists(candidate):
-                binary_mtime = os.path.getmtime(candidate)
-                if binary_mtime >= source_mtime:
-                    return candidate
-
-        pkg_flags = self._get_ffmpeg_compile_flags()
-        if pkg_flags is None:
-            return None
-
-        compile_cmd = [
-            "gcc",
-            MOTION_VECTOR_EXTRACTOR_SOURCE,
-            "-O2",
-            "-std=c11",
-            "-o",
-            MOTION_VECTOR_EXTRACTOR_BINARY,
-        ] + pkg_flags
-
-        try:
-            subprocess.run(compile_cmd, check=True, capture_output=True, text=True)
-            return MOTION_VECTOR_EXTRACTOR_BINARY
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            stderr = getattr(e, "stderr", "")
-            print(
-                f"Advertencia: no se pudo compilar el extractor de motion vectors: {e}\n{stderr}"
-            )
-            return None
-
-    def _get_ffmpeg_compile_flags(self):
-        """Obtiene flags de compilación para FFmpeg, probando pkg-config y pkgconf."""
-        for pkg_tool in ("pkg-config", "pkgconf"):
-            try:
-                result = subprocess.run(
-                    [
-                        pkg_tool,
-                        "--cflags",
-                        "--libs",
-                        "libavformat",
-                        "libavcodec",
-                        "libavutil",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                return result.stdout.split()
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                continue
-
-        print(
-            "Advertencia: no se encontró pkg-config ni pkgconf. "
-            "Instala FFmpeg dev libraries y pkg-config para motion vectors."
-        )
-        return None
 
     def run_step(self, message):
         print(f"[*] {message}...")
@@ -515,69 +437,67 @@ class MBVisualizer:
             print(f"Advertencia: No se pudieron extraer métricas de bitrate: {e}")
 
     def extract_motion_vector_data(self):
-        """Extrae motion vectors por frame usando un helper basado en libavcodec."""
-        extractor_path = self._ensure_motion_vector_extractor()
-        if extractor_path is None:
-            self.frame_data["motion_vectors"] = []
+        """Extrae motion vectors por frame usando PyAV (portable, sin compilación nativa)."""
+        self.frame_data["motion_vectors"] = []
+        try:
+            import av
+        except ImportError:
+            print(
+                "Advertencia: PyAV no instalado (pip install av). Motion vectors no disponibles."
+            )
             return
 
         try:
-            result = subprocess.run(
-                [extractor_path, self.output_mp4],
-                capture_output=True,
-                text=True,
-                check=True,
+            container = av.open(self.output_mp4)
+            stream = container.streams.video[0]
+            stream.codec_context.options = {"flags2": "+export_mvs"}
+
+            motion_vectors_by_frame = {}
+            total_vectors = 0
+
+            for frame_idx, frame in enumerate(container.decode(stream)):
+                vectors = frame.side_data.get("MOTION_VECTORS")
+                if vectors is None:
+                    continue
+
+                ndarray = vectors.to_ndarray()
+                frame_vectors = []
+                for row in ndarray:
+                    frame_vectors.append(
+                        {
+                            "source": int(row["source"]),
+                            "w": int(row["w"]),
+                            "h": int(row["h"]),
+                            "src_x": int(row["src_x"]),
+                            "src_y": int(row["src_y"]),
+                            "dst_x": int(row["dst_x"]),
+                            "dst_y": int(row["dst_y"]),
+                            "motion_x": int(row["motion_x"]),
+                            "motion_y": int(row["motion_y"]),
+                            "motion_scale": int(row["motion_scale"]),
+                        }
+                    )
+                    total_vectors += 1
+
+                motion_vectors_by_frame[frame_idx] = frame_vectors
+
+            frame_count = max(
+                len(self.frame_data.get("size_values", [])),
+                len(self.frame_data.get("qp_values", [])),
+                (max(motion_vectors_by_frame.keys()) + 1)
+                if motion_vectors_by_frame
+                else 0,
             )
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            stderr = getattr(e, "stderr", "")
-            print(f"Advertencia: no se pudieron extraer motion vectors: {e}\n{stderr}")
+            self.frame_data["motion_vectors"] = [
+                motion_vectors_by_frame.get(frame_idx, [])
+                for frame_idx in range(frame_count)
+            ]
+            print(
+                f"Extraídos {total_vectors} motion vectors repartidos en {len(motion_vectors_by_frame)} frames"
+            )
+        except Exception as e:
+            print(f"Advertencia: no se pudieron extraer motion vectors: {e}")
             self.frame_data["motion_vectors"] = []
-            return
-
-        motion_vectors_by_frame = {}
-        total_vectors = 0
-
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line or line.startswith("frame_index,"):
-                continue
-
-            parts = line.split(",")
-            if len(parts) != 11:
-                continue
-
-            try:
-                frame_index = int(parts[0])
-                vector_data = {
-                    "source": int(parts[1]),
-                    "w": int(parts[2]),
-                    "h": int(parts[3]),
-                    "src_x": int(parts[4]),
-                    "src_y": int(parts[5]),
-                    "dst_x": int(parts[6]),
-                    "dst_y": int(parts[7]),
-                    "motion_x": int(parts[8]),
-                    "motion_y": int(parts[9]),
-                    "motion_scale": int(parts[10]),
-                }
-            except ValueError:
-                continue
-
-            motion_vectors_by_frame.setdefault(frame_index, []).append(vector_data)
-            total_vectors += 1
-
-        frame_count = max(
-            len(self.frame_data.get("size_values", [])),
-            len(self.frame_data.get("qp_values", [])),
-            (max(motion_vectors_by_frame.keys()) + 1) if motion_vectors_by_frame else 0,
-        )
-        self.frame_data["motion_vectors"] = [
-            motion_vectors_by_frame.get(frame_idx, [])
-            for frame_idx in range(frame_count)
-        ]
-        print(
-            f"Extraídos {total_vectors} motion vectors repartidos en {len(motion_vectors_by_frame)} frames"
-        )
 
     def calculate_psnr(self):
         """Calcula el PSNR comparando el video original con el comprimido."""
