@@ -16,21 +16,47 @@ import json
 import cv2  # type: ignore[attr-defined]
 from pathlib import Path
 
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvas
-from matplotlib.backends.backend_qt import NavigationToolbar2QT
-from matplotlib.ticker import MultipleLocator
-
 from h264tt.core.visualizer import MBVisualizer as CoreMBVisualizer
 
 SETTINGS_FILE_NAME = ".h264tt_settings.json"
 
-# Configurar entorno Qt antes de importar PyQt5
-if "DISPLAY" in os.environ or os.name == "nt":
-    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
+def _configure_qt_platform():
+    """Configura la plataforma Qt de forma segura para Linux, Windows y macOS."""
+    current_platform = os.environ.get("QT_QPA_PLATFORM")
+
+    # Si ya hay un valor, validamos que sea compatible con el SO actual
+    if current_platform:
+        is_linux = sys.platform.startswith("linux")
+
+        if not is_linux and current_platform == "xcb":
+            # "xcb" solo existe en Linux. En Windows/macOS lo limpiamos
+            # para que Qt auto-detecte la plataforma correcta.
+            del os.environ["QT_QPA_PLATFORM"]
+            return
+
+        # El valor existente es válido para el SO actual, no tocamos nada
+        if current_platform != "xcb":
+            return
+
+    # Sin valor predefinido: configuramos según el SO
+    if sys.platform.startswith("linux"):
+        if os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
+    # En Windows y macOS Qt auto-detecta la plataforma correcta
+    # ("windows" y "cocoa" respectivamente), no es necesario forzarla.
+
+
+_configure_qt_platform()
 
 # Importaciones condicionales para la GUI
 try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_qtagg import FigureCanvas
+    from matplotlib.backends.backend_qt import NavigationToolbar2QT
+    from matplotlib.ticker import MultipleLocator
+
     from PyQt5.QtWidgets import (
         QApplication,
         QMainWindow,

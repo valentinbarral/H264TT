@@ -12,7 +12,8 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "opencv-python-headless>=4.10",
-    "PyQt5>=5.15",
+    "PyQt5==5.15.11",
+    "pyqt5-qt5==5.15.2",
 ]
 
 [project.scripts]
