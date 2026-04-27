@@ -8,7 +8,9 @@ import cv2  # type: ignore[attr-defined]
 
 NATIVE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "native"))
 MOTION_VECTOR_EXTRACTOR_SOURCE = os.path.join(NATIVE_DIR, "extract_mvs.c")
-MOTION_VECTOR_EXTRACTOR_BINARY = os.path.join(NATIVE_DIR, "extract_mvs")
+MOTION_VECTOR_EXTRACTOR_BINARY = os.path.join(
+    NATIVE_DIR, "extract_mvs.exe" if sys.platform == "win32" else "extract_mvs"
+)
 
 
 def create_yuv_from_mp4(
@@ -143,33 +145,22 @@ class MBVisualizer:
             )
             return None
 
-        binary_exists = os.path.exists(MOTION_VECTOR_EXTRACTOR_BINARY)
+        # Buscar binario preexistente (con o sin extensión de plataforma)
+        binary_names = [MOTION_VECTOR_EXTRACTOR_BINARY]
+        if sys.platform == "win32":
+            binary_names.append(MOTION_VECTOR_EXTRACTOR_BINARY.replace(".exe", ""))
+        else:
+            binary_names.append(MOTION_VECTOR_EXTRACTOR_BINARY + ".exe")
+
         source_mtime = os.path.getmtime(MOTION_VECTOR_EXTRACTOR_SOURCE)
-        binary_mtime = (
-            os.path.getmtime(MOTION_VECTOR_EXTRACTOR_BINARY) if binary_exists else -1
-        )
+        for candidate in binary_names:
+            if os.path.exists(candidate):
+                binary_mtime = os.path.getmtime(candidate)
+                if binary_mtime >= source_mtime:
+                    return candidate
 
-        if binary_exists and binary_mtime >= source_mtime:
-            return MOTION_VECTOR_EXTRACTOR_BINARY
-
-        try:
-            pkg_config = subprocess.run(
-                [
-                    "pkg-config",
-                    "--cflags",
-                    "--libs",
-                    "libavformat",
-                    "libavcodec",
-                    "libavutil",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(
-                f"Advertencia: no se pudieron obtener flags de FFmpeg para compilar extract_mvs: {e}"
-            )
+        pkg_flags = self._get_ffmpeg_compile_flags()
+        if pkg_flags is None:
             return None
 
         compile_cmd = [
@@ -179,7 +170,7 @@ class MBVisualizer:
             "-std=c11",
             "-o",
             MOTION_VECTOR_EXTRACTOR_BINARY,
-        ] + pkg_config.stdout.split()
+        ] + pkg_flags
 
         try:
             subprocess.run(compile_cmd, check=True, capture_output=True, text=True)
@@ -190,6 +181,33 @@ class MBVisualizer:
                 f"Advertencia: no se pudo compilar el extractor de motion vectors: {e}\n{stderr}"
             )
             return None
+
+    def _get_ffmpeg_compile_flags(self):
+        """Obtiene flags de compilación para FFmpeg, probando pkg-config y pkgconf."""
+        for pkg_tool in ("pkg-config", "pkgconf"):
+            try:
+                result = subprocess.run(
+                    [
+                        pkg_tool,
+                        "--cflags",
+                        "--libs",
+                        "libavformat",
+                        "libavcodec",
+                        "libavutil",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                return result.stdout.split()
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+
+        print(
+            "Advertencia: no se encontró pkg-config ni pkgconf. "
+            "Instala FFmpeg dev libraries y pkg-config para motion vectors."
+        )
+        return None
 
     def run_step(self, message):
         print(f"[*] {message}...")
