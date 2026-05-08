@@ -1,40 +1,35 @@
 # H264TT (H264 Teaching Tool)
 
-H264TT is a teaching-oriented H.264 analysis tool built around FFmpeg. It lets you encode video, extract low-level analysis data, and inspect the results through an interactive GUI with macroblock overlays, frame statistics, QP evolution, frame-size plots, and motion vectors.
+H264TT is a teaching-oriented H.264 analysis tool built around FFmpeg. It allows you to encode video, extract low-level analysis data, and inspect the results through an interactive GUI. The tool provides visual insights into macroblock partitions, motion vectors, and frame-level statistics.
 
-## Main capabilities
+![H264TT GUI](img/app.png)
+*Full GUI showing macroblock overlay, encoding panel, and analysis inspector*
 
-- Interactive GUI for H.264 teaching and inspection
-- Macroblock overlay with color-coded INTRA / SKIP / INTER blocks
-- Frame-by-frame statistics:
-  - frame type
-  - average QP
-  - encoded frame size
-  - macroblock distribution
-- Analysis sidecar generation (`.analysis.json`)
-- QP and frame-size plots
-- Motion-vector extraction and overlay rendering
-- CLI mode for batch analysis workflows
-- Configurable FFmpeg / FFprobe executable paths
+## Graphical User Interface Features
+
+The H264TT GUI is designed for educational exploration of the H.264 codec.
+
+- **Encoding Configuration**: The left panel provides full control over the encoding process. You can select the codec, preset, and tune settings. It supports various encoding modes including CBR, VBR, CRF, and fixed QP. You can also adjust GOP settings, B-frames, and motion vector search parameters.
+- **Interactive Video Player**: The central area features a video player with real-time overlays.
+    - **Macroblock Overlay**: Visualizes different macroblock types using color coding: INTRA (red), SKIP (green), and INTER (blue).
+    - **Motion Vector Overlay**: Displays directional arrows for motion compensation. Forward L0 vectors appear in blue, backward L1 in magenta, and bi-predictive in cyan.
+    - **Visual Controls**: Toggles for overlays and an opacity slider allow for detailed inspection of the underlying video frames.
+- **Temporal Analysis**: Charts at the bottom track QP evolution over frames and frame size in bytes, providing a clear view of bitrate distribution and quality consistency.
+- **Analysis Inspector**: The right panel offers a deep dive into frame-specific data.
+    - **Frame Info**: Displays frame number, type, average QP, and size.
+    - **Macroblock Legend**: A collapsible legend with detailed descriptions for each symbol.
+    - **Analysis Summary**: Overall metrics including resolution, FPS, compression ratio, and PSNR.
+
+![Motion vector overlay](img/vector_movements.png)
+*Motion vector overlay visualization*
 
 ## FFmpeg compatibility
 
-This project is designed around **FFmpeg 6.1.1**.
+This project is designed around FFmpeg 6.1.
 
-Later versions may still work, but low-level debug output and teaching-oriented internals are not guaranteed to behave identically. If you want consistent macroblock analysis results, use FFmpeg 6.1.1 whenever possible.
+Later versions may work, but low-level debug output and internals are not guaranteed to behave identically. Use FFmpeg 6.1 for consistent macroblock analysis results.
 
-Also note:
-
-- H.264 encoding features require a build with **`libx264` enabled**
-- motion-vector extraction requires FFmpeg development libraries if the native helper must be compiled locally
-
-## Requirements
-
-- Python 3.10+
-- FFmpeg
-- FFprobe
-
-You can use either `uv` or a traditional `pip`-based environment.
+For convenience, prebuilt static binaries for Windows and Linux are included in the GitHub releases. These binaries are distributed under the *GNU General Public License (GPL)* because they were built with GPL-enabled components (including libx264). See [FFmpeg / FFprobe](#ffmpeg--ffprobe) for more details on licensing and usage.
 
 ## Installation
 
@@ -45,22 +40,24 @@ git clone https://github.com/valentinbarral/H264TT.git
 cd H264TT
 ```
 
+### Using uv (recommended)
+
 Install dependencies:
 
 ```bash
 uv sync
 ```
 
-### Installation without uv
+### Using pip
 
-Create and activate a virtual environment if you want:
+Create and activate a virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Install dependencies with `pip`:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -68,172 +65,72 @@ pip install -r requirements.txt
 
 ## Running the tool
 
-### With uv
+### GUI Launch
 
-#### GUI
-
+Using uv:
 ```bash
 uv run H264TT
 ```
 
-#### CLI
-
-```bash
-uv run H264TT-cli input_video.mp4 --params "-c:v libx264 -preset medium -crf 23"
-```
-
-#### Diagnostic utility
-
-```bash
-uv run H264TT-diagnose my_log.txt
-```
-
-### Without uv
-
-If you installed the dependencies with `pip`, launch the tools with Python directly:
-
-#### GUI
-
+Using python:
 ```bash
 python3 H264TT.py
 ```
 
-#### CLI
+### CLI Launch
 
+Using uv:
+```bash
+uv run H264TT-cli input_video.mp4 --params "-c:v libx264 -preset medium -crf 23"
+```
+
+Using python:
 ```bash
 python3 H264TT_cli.py input_video.mp4 --params "-c:v libx264 -preset medium -crf 23"
 ```
 
-#### Diagnostic utility
-
-```bash
-python3 H264TT_diagnose.py my_log.txt
-```
-
-## GUI workflow
-
-Typical workflow in the GUI:
-
-1. Select an input video
-2. Choose an output video name
-3. Configure encoding parameters
-4. Start encoding
-5. Let H264TT generate:
-   - encoded video
-   - analysis sidecar
-   - statistics file
-   - QP / frame-size plots
-6. Inspect the result directly in the GUI
-
-The GUI can automatically load the encoded video after a successful run.
-
-## Local settings persistence
-
-When you save FFmpeg / FFprobe paths from the settings dialog, H264TT stores them locally in:
-
-```text
-.h264tt_settings.json
-```
-
-That file is automatically loaded the next time the application starts in the same working directory.
-
-## CLI usage examples
-
-### Basic CLI usage
-
-```bash
-uv run H264TT-cli input_video.mp4
-```
-
-### Custom encoding parameters
-
-```bash
-uv run H264TT-cli input_video.mp4 --params "-c:v libx264 -preset slow -crf 20"
-```
-
-### Custom FFmpeg / FFprobe paths
-
-```bash
-uv run H264TT-cli input_video.mp4 \
-  --ffmpeg-path /path/to/ffmpeg \
-  --ffprobe-path /path/to/ffprobe
-```
-
-### Custom output video name
-
-```bash
-uv run H264TT-cli input_video.mp4 --output-video my_output.mp4
-```
-
-### Convert MP4 to YUV
-
-```bash
-uv run H264TT-cli input.mp4 --create-yuv --yuv-width 1920 --yuv-height 1080
-```
-
-### Process a raw YUV input
-
-```bash
-uv run H264TT-cli input.yuv --params "-s 1920x1080 -r 30 -pix_fmt yuv420p -f rawvideo -c:v libx264 -preset medium"
-```
-
-## Output files
-
-Depending on the workflow, H264TT can generate:
-
-- encoded video (`.mp4`)
-- analysis sidecar (`.analysis.json`)
-- compatibility frame info export (`.info`)
-- statistics file (`_stats.txt`)
-- QP / frame-size plots (`_qp_size_plots.png`)
-
-## Notes on motion vectors
-
-The GUI supports interactive motion-vector visualization.
-
-Internally, motion vectors are extracted as data and stored in the analysis sidecar, rather than being burned directly into a derived video. This makes the overlay toggleable and compatible with the rest of the analysis UI.
-
 ## Troubleshooting
 
-### FFmpeg encoding fails immediately
-
-Check whether your FFmpeg build includes `libx264`:
-
+### FFmpeg encoding fails
+Verify your FFmpeg build includes libx264:
 ```bash
 ffmpeg -encoders | grep x264
 ```
+The teaching workflows require libx264 to function correctly.
 
-If `libx264` is missing, H.264 teaching workflows will not work correctly.
+### Qt or OpenCV issues
+The project uses `opencv-python-headless` to avoid common GUI conflicts while providing necessary `cv2` functionality.
 
-### Qt / OpenCV plugin problems
-
-The project uses `opencv-python-headless` to reduce common GUI conflicts while still providing `cv2`.
-
-### No graphical display available
-
-If you are running remotely or in a headless environment, make sure your Qt display environment is configured correctly before launching the GUI.
+### Headless environments
+If running on a remote server, ensure your Qt display environment is correctly configured before launching the GUI.
 
 ## Project structure
 
-Main package:
-
-- `h264tt/`
-  - `core/`
-  - `gui/`
-  - `native/`
-
-Launchers:
-
-- `H264TT.py`
-- `H264TT_cli.py`
-- `H264TT_diagnose.py`
+The main package consists of:
+- `h264tt/`: Core logic, GUI components, and native helpers.
+- `H264TT.py`: Primary GUI launcher.
+- `H264TT_cli.py`: Command-line interface launcher.
+- `H264TT_diagnose.py`: Diagnostic utility.
 
 ## License
 
-This work is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.
+This project is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.
 
 **Author:** Valentin Barral
 
-More information:
+## FFmpeg / FFprobe
 
-https://creativecommons.org/licenses/by/4.0/
+This project invokes FFmpeg and FFprobe as external command-line tools.
+
+For convenience, prebuilt static binaries for Windows and Linux are included in the GitHub releases. These binaries are distributed under the **GNU General Public License (GPL)** because they were built with GPL-enabled components (including libx264).
+
+The main application does not link against FFmpeg libraries and does not include FFmpeg source code. FFmpeg and FFprobe are separate third-party executables invoked via subprocess.
+
+For more information about FFmpeg licensing, see https://ffmpeg.org/legal.html.
+
+## Screenshot attribution
+
+The screenshots in this documentation contain footage from **Big Buck Bunny**.
+- **License**: Creative Commons Attribution 3.0 (CC BY 3.0)
+- **Attribution**: © copyright 2008, Blender Foundation / www.bigbuckbunny.org
+- **Link**: https://peach.blender.org

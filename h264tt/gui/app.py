@@ -17,6 +17,7 @@ import cv2  # type: ignore[attr-defined]
 from pathlib import Path
 
 from h264tt.core.visualizer import MBVisualizer as CoreMBVisualizer
+from h264tt.gui.i18n import _, set_language
 
 SETTINGS_FILE_NAME = ".h264tt_settings.json"
 
@@ -85,6 +86,8 @@ try:
         QDialog,
         QSlider,
         QTabWidget,
+        QAction,
+        QActionGroup,
     )
     from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
     from PyQt5.QtGui import QFont, QPixmap, QIcon, QImage, QResizeEvent
@@ -116,6 +119,8 @@ except ImportError as e:
     ) = QProgressDialog = QRadioButton = QSizePolicy = QDialog = QSlider = (
         QTabWidget
     ) = QFont = QPixmap = QIcon = QImage = QResizeEvent = _QtPlaceholder
+    Figure = FigureCanvas = NavigationToolbar2QT = MultipleLocator = _QtPlaceholder
+    QAction = QActionGroup = _QtPlaceholder
     Qt = _QtFallback()
 
     class QThread:  # type: ignore[no-redef]
@@ -151,10 +156,11 @@ class EncodingWorker(QThread):
             # Importar librerías necesarias para el thread
             import cv2
             import matplotlib
+            from h264tt.gui.i18n import _ as _t
 
             matplotlib.use("Agg")  # Backend no-GUI para evitar conflictos
 
-            self.progress.emit("Iniciando codificación...")
+            self.progress.emit(_t("Iniciando codificación..."))
 
             # Crear instancia de MBVisualizer con los parámetros
             vis = CoreMBVisualizer(
@@ -169,7 +175,7 @@ class EncodingWorker(QThread):
             )
 
             # Verificar FFmpeg
-            self.progress.emit("Verificando FFmpeg...")
+            self.progress.emit(_t("Verificando FFmpeg..."))
             try:
                 vis.check_ffmpeg()
             except SystemExit:
@@ -179,19 +185,19 @@ class EncodingWorker(QThread):
                 return
 
             # Codificar video
-            self.progress.emit("Codificando video...")
+            self.progress.emit(_t("Codificando video..."))
             vis.encode_video()
 
             # Extraer información de debug
-            self.progress.emit("Extrayendo información de macrobloques...")
+            self.progress.emit(_t("Extrayendo información de macrobloques..."))
             vis.extract_debug_info()
 
             # Generar sidecar de análisis
-            self.progress.emit("Generando datos de análisis para la herramienta...")
+            self.progress.emit(_t("Generando datos de análisis para la herramienta..."))
             vis.generate_analysis_sidecar()
 
             if os.path.exists(vis.output_mp4):
-                self.progress.emit("Codificación completada")
+                self.progress.emit(_t("Codificación completada"))
                 self.finished.emit(vis.output_mp4)
             else:
                 self.error.emit(
@@ -212,7 +218,10 @@ class MBVisualizerGUI(QMainWindow):
         # Configuración inicial
         self.ffmpeg_path = "ffmpeg"  # Path por defecto
         self.ffprobe_path = "ffprobe"  # Path por defecto
+        self.language = "es"
+        self._collapsible_sections = []
         self._load_local_settings()
+        set_language(self.language)
 
         # Widget del reproductor
         self.video_player = VideoPlayerWidget(ffmpeg_path=self.ffmpeg_path)
@@ -248,10 +257,10 @@ class MBVisualizerGUI(QMainWindow):
 
         # Barra de estado
         self.status_bar = self.statusBar()
-        self.quick_metrics_label = QLabel("Sin video cargado")
+        self.quick_metrics_label = QLabel(_("Sin video cargado"))
         self.quick_metrics_label.setObjectName("quickMetrics")
         self.status_bar.addPermanentWidget(self.quick_metrics_label)
-        self.status_bar.showMessage("Listo")
+        self.status_bar.showMessage(_("Listo"))
         self.encoding_progress_dialog = None
 
         # Crear barra de menú al final, después de que todos los widgets estén inicializados
@@ -270,56 +279,82 @@ class MBVisualizerGUI(QMainWindow):
         menubar = self.menuBar()
 
         # Menú File
-        file_menu = menubar.addMenu("Archivo")
+        self.file_menu = menubar.addMenu(_("Archivo"))
 
         # Settings
-        settings_action = file_menu.addAction("Configuración")
-        settings_action.setShortcut("Ctrl+P")
-        settings_action.triggered.connect(self.show_settings_dialog)
+        self.settings_menu = self.file_menu.addMenu(_("Configuración"))
+        self.settings_action = self.settings_menu.addAction(_("Configuración"))
+        self.settings_action.setShortcut("Ctrl+P")
+        self.settings_action.triggered.connect(self.show_settings_dialog)
 
-        load_video_action = file_menu.addAction("Cargar video")
-        load_video_action.setShortcut("Ctrl+O")
-        load_video_action.triggered.connect(self.load_video_with_mb_extraction)
+        self.language_menu = self.settings_menu.addMenu(_("Language / Idioma"))
+        self.language_action_group = QActionGroup(self)
+        self.language_action_group.setExclusive(True)
+        self.language_actions = {}
+        for lang_code, lang_label in (
+            ("en", "English"),
+            ("es", "Español"),
+            ("gl", "Galego"),
+        ):
+            action = QAction(_(lang_label), self)
+            action.setCheckable(True)
+            action.setChecked(self.language == lang_code)
+            action.triggered.connect(
+                lambda checked, code=lang_code: self._change_language(code)
+            )
+            self.language_action_group.addAction(action)
+            self.language_menu.addAction(action)
+            self.language_actions[lang_code] = action
+
+        self.load_video_action = self.file_menu.addAction(_("Cargar video"))
+        self.load_video_action.setShortcut("Ctrl+O")
+        self.load_video_action.triggered.connect(self.load_video_with_mb_extraction)
 
         # Separador
-        file_menu.addSeparator()
+        self.file_menu.addSeparator()
 
         # Exit
-        exit_action = file_menu.addAction("Salir")
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
+        self.exit_action = self.file_menu.addAction(_("Salir"))
+        self.exit_action.setShortcut("Ctrl+Q")
+        self.exit_action.triggered.connect(self.close)
 
         # Menú View
-        view_menu = menubar.addMenu("Ver")
+        self.view_menu = menubar.addMenu(_("Ver"))
 
         # Toggle Console
-        self.toggle_console_action = view_menu.addAction("Mostrar Consola de Log")
+        self.toggle_console_action = self.view_menu.addAction(_("Mostrar Consola de Log"))
         self.toggle_console_action.setShortcut("Ctrl+L")
         self.toggle_console_action.triggered.connect(self.toggle_console)
         self.toggle_console_action.setCheckable(True)
         self.toggle_console_action.setChecked(False)  # Inicialmente oculta
 
-        self.toggle_config_action = view_menu.addAction("Mostrar Configuración")
+        self.toggle_config_action = self.view_menu.addAction(_("Mostrar Configuración"))
         self.toggle_config_action.setCheckable(True)
         self.toggle_config_action.setChecked(True)
         self.toggle_config_action.triggered.connect(self.toggle_configuration_panel)
 
-        self.toggle_inspector_action = view_menu.addAction("Mostrar Inspector")
+        self.toggle_inspector_action = self.view_menu.addAction(_("Mostrar Inspector"))
         self.toggle_inspector_action.setCheckable(True)
         self.toggle_inspector_action.setChecked(True)
         self.toggle_inspector_action.triggered.connect(self.toggle_inspector_panel)
 
-        self.toggle_analysis_action = view_menu.addAction("Mostrar gráficas")
+        self.toggle_analysis_action = self.view_menu.addAction(_("Mostrar gráficas"))
         self.toggle_analysis_action.setCheckable(True)
         self.toggle_analysis_action.setChecked(True)
         self.toggle_analysis_action.triggered.connect(self.toggle_analysis_panel)
 
         # Menú Help
-        help_menu = menubar.addMenu("Ayuda")
+        self.help_menu = menubar.addMenu(_("Ayuda"))
 
         # About
-        about_action = help_menu.addAction("Acerca de")
-        about_action.triggered.connect(self.show_about_dialog)
+        self.about_action = self.help_menu.addAction(_("Acerca de"))
+        self.about_action.triggered.connect(self.show_about_dialog)
+
+    def _change_language(self, lang_code):
+        self.language = lang_code
+        set_language(lang_code)
+        self._save_local_settings()
+        self._retranslate_ui()
 
     def create_config_panel(self):
         """Crea un espacio de trabajo profesional unificado."""
@@ -356,9 +391,9 @@ class MBVisualizerGUI(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
 
-        section_label = QLabel("Configuración de codificación")
-        section_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        layout.addWidget(section_label)
+        self.encoding_config_label = QLabel(_("Configuración de codificación"))
+        self.encoding_config_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(self.encoding_config_label)
         layout.addWidget(
             self.create_collapsible_section("Archivos", self.create_file_group(), True)
         )
@@ -392,7 +427,7 @@ class MBVisualizerGUI(QMainWindow):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(4)
 
-        header_btn = QPushButton(f"▾ {title}" if expanded else f"▸ {title}")
+        header_btn = QPushButton(f"▾ {_(title)}" if expanded else f"▸ {_(title)}")
         header_btn.setCheckable(True)
         header_btn.setChecked(expanded)
         header_btn.setStyleSheet(
@@ -407,10 +442,11 @@ class MBVisualizerGUI(QMainWindow):
         outer_layout.addWidget(content_widget)
 
         def toggle_section(checked):
-            header_btn.setText(f"▾ {title}" if checked else f"▸ {title}")
+            header_btn.setText(f"▾ {_(title)}" if checked else f"▸ {_(title)}")
             content_widget.setVisible(checked)
 
         header_btn.toggled.connect(toggle_section)
+        self._collapsible_sections.append((header_btn, title))
         return container
 
     def create_visual_workspace(self):
@@ -436,9 +472,9 @@ class MBVisualizerGUI(QMainWindow):
         self.toggle_config_btn.toggled.connect(self.toggle_configuration_panel)
         header.addWidget(self.toggle_config_btn)
 
-        title = QLabel("Video y overlay de macroblocks")
-        title.setStyleSheet("font-size: 14px; font-weight: bold;")
-        header.addWidget(title)
+        self.video_workspace_title = QLabel(_("Video y overlay de macroblocks"))
+        self.video_workspace_title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        header.addWidget(self.video_workspace_title)
         header.addStretch()
 
         self.toggle_inspector_btn = QPushButton("▸")
@@ -457,14 +493,16 @@ class MBVisualizerGUI(QMainWindow):
         layout = QVBoxLayout(analysis_widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        plots_group = QGroupBox("Análisis temporal")
-        plots_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        plots_layout = QVBoxLayout(plots_group)
+        self.plots_group = QGroupBox(_("Análisis temporal"))
+        self.plots_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        plots_layout = QVBoxLayout(self.plots_group)
 
         view_mode_layout = QHBoxLayout()
-        view_mode_layout.addWidget(QLabel("Vista:"))
+        self.analysis_view_label = QLabel(_("Vista:"))
+        view_mode_layout.addWidget(self.analysis_view_label)
         self.analysis_view_mode_combo = QComboBox()
-        self.analysis_view_mode_combo.addItems(["Ambas", "Solo QP", "Solo tamaño"])
+        for mode_key in ("Ambas", "Solo QP", "Solo tamaño"):
+            self.analysis_view_mode_combo.addItem(_(mode_key), mode_key)
         self.analysis_view_mode_combo.currentTextChanged.connect(
             self._update_analysis_view_mode
         )
@@ -504,7 +542,7 @@ class MBVisualizerGUI(QMainWindow):
 
         plots_scroll.setWidget(plots_content)
         plots_layout.addWidget(plots_scroll)
-        layout.addWidget(plots_group)
+        layout.addWidget(self.plots_group)
 
         self.qp_canvas.mpl_connect("button_press_event", self.on_plot_clicked)
         self.size_canvas.mpl_connect("button_press_event", self.on_plot_clicked)
@@ -541,8 +579,9 @@ class MBVisualizerGUI(QMainWindow):
                 canvas.setMinimumHeight(target_height)
 
     def _update_analysis_view_mode(self, mode_text):
-        show_qp = mode_text in ["Ambas", "Solo QP"]
-        show_size = mode_text in ["Ambas", "Solo tamaño"]
+        mode_key = self.analysis_view_mode_combo.currentData() or mode_text
+        show_qp = mode_key in ["Ambas", "Solo QP"]
+        show_size = mode_key in ["Ambas", "Solo tamaño"]
 
         if hasattr(self, "qp_plot_widget"):
             self.qp_plot_widget.setVisible(show_qp)
@@ -561,9 +600,9 @@ class MBVisualizerGUI(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(0)
 
-        inspector_title = QLabel("Inspector")
-        inspector_title.setStyleSheet("font-size: 14px; font-weight: bold;")
-        layout.addWidget(inspector_title)
+        self.inspector_title = QLabel(_("Inspector"))
+        self.inspector_title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(self.inspector_title)
 
         layout.addWidget(self.video_player.info_panel)
 
@@ -589,7 +628,7 @@ class MBVisualizerGUI(QMainWindow):
 
     def clear_analysis_tab(self):
         if hasattr(self, "analysis_summary"):
-            self.analysis_summary.setPlainText("No hay datos de análisis cargados.")
+            self.analysis_summary.setPlainText(_("No hay datos de análisis cargados."))
         if hasattr(self, "qp_figure"):
             self.qp_figure.clear()
         if hasattr(self, "qp_canvas"):
@@ -607,7 +646,7 @@ class MBVisualizerGUI(QMainWindow):
         self.qp_band = None
         self.size_band = None
         if hasattr(self, "quick_metrics_label"):
-            self.quick_metrics_label.setText("Sin video cargado")
+            self.quick_metrics_label.setText(_("Sin video cargado"))
 
     def _resolve_analysis_artifacts(self, video_path=None, sidecar_path=None):
         base_candidates = []
@@ -646,7 +685,7 @@ class MBVisualizerGUI(QMainWindow):
                 return self._normalize_summary_text(f.read())
 
         if not analysis_data:
-            return "No hay datos de análisis cargados."
+            return _("No hay datos de análisis cargados.")
 
         metadata = analysis_data.get("metadata", {})
         video_info = analysis_data.get("video_info", {})
@@ -666,28 +705,28 @@ class MBVisualizerGUI(QMainWindow):
         avg_psnr = summary.get("avg_psnr")
 
         lines = [
-            "RESUMEN GENERAL",
+            _("RESUMEN GENERAL"),
             "-" * 30,
-            f"Archivo de entrada: {metadata.get('input_file', 'N/D')}",
-            f"Video codificado: {metadata.get('output_video', 'N/D')}",
-            f"Resolución: {video_info.get('width', 0)}x{video_info.get('height', 0)}",
+            f"{_('Archivo de entrada')}: {metadata.get('input_file', 'N/D')}",
+            f"{_('Video codificado')}: {metadata.get('output_video', 'N/D')}",
+            f"{_('Resolución')}: {video_info.get('width', 0)}x{video_info.get('height', 0)}",
             f"FPS: {video_info.get('fps', 'N/D')}",
-            f"Total de macroblocks analizados: {self._format_plain_number(total_mb)}",
-            f"Total de frames analizados: {frame_count}",
-            f"Tamaño archivo original: {self._format_bytes_human(input_size)}",
-            f"Tamaño archivo codificado: {self._format_bytes_human(output_size)}",
-            f"Ratio de compresión: {self._format_ratio(compression_ratio)}",
-            f"Porcentaje de compresión: {self._format_percentage(compression_percentage)}",
-            f"Bitrate promedio: {self._format_bitrate(avg_bitrate)}",
-            f"PSNR promedio: {self._format_psnr(avg_psnr)}",
+            f"{_('Total de macroblocks analizados')}: {self._format_plain_number(total_mb)}",
+            f"{_('Total de frames analizados')}: {frame_count}",
+            f"{_('Tamaño archivo original')}: {self._format_bytes_human(input_size)}",
+            f"{_('Tamaño archivo codificado')}: {self._format_bytes_human(output_size)}",
+            f"{_('Ratio de compresión')}: {self._format_ratio(compression_ratio)}",
+            f"{_('Porcentaje de compresión')}: {self._format_percentage(compression_percentage)}",
+            f"{_('Bitrate promedio')}: {self._format_bitrate(avg_bitrate)}",
+            f"{_('PSNR promedio')}: {self._format_psnr(avg_psnr)}",
             "",
-            "TIPOS DE FRAME",
+            _("TIPOS DE FRAME"),
             "-" * 30,
             f"I-Frames: {self._format_plain_number(frame_type_counts.get('I', 0))} ({self._format_percentage(frame_type_percentages.get('I', 0))})",
             f"P-Frames: {self._format_plain_number(frame_type_counts.get('P', 0))} ({self._format_percentage(frame_type_percentages.get('P', 0))})",
             f"B-Frames: {self._format_plain_number(frame_type_counts.get('B', 0))} ({self._format_percentage(frame_type_percentages.get('B', 0))})",
             "",
-            "DISTRIBUCIÓN POR TIPO DE MACROBLOCK",
+            _("DISTRIBUCIÓN POR TIPO DE MACROBLOCK"),
             "-" * 30,
             f"INTRA: {self._format_plain_number(mb_totals.get('INTRA', 0))} ({self._format_percentage(mb_percentages.get('INTRA', 0))})",
             f"SKIP: {self._format_plain_number(mb_totals.get('SKIP', 0))} ({self._format_percentage(mb_percentages.get('SKIP', 0))})",
@@ -763,7 +802,7 @@ class MBVisualizerGUI(QMainWindow):
 
     def _update_quick_metrics(self):
         if not self.video_player.video_path or self.video_player.total_frames <= 0:
-            self.quick_metrics_label.setText("Sin video cargado")
+            self.quick_metrics_label.setText(_("Sin video cargado"))
             return
 
         width = (
@@ -782,7 +821,7 @@ class MBVisualizerGUI(QMainWindow):
         valid_qp = [value for value in qp_values if value is not None]
         avg_qp = f"{sum(valid_qp) / len(valid_qp):.2f}" if valid_qp else "-"
         self.quick_metrics_label.setText(
-            f"{width}x{height} · {fps:.2f} FPS · {self.video_player.total_frames} frames · QP medio {avg_qp}"
+            f"{width}x{height} · {fps:.2f} FPS · {self.video_player.total_frames} frames · {_('QP medio')} {avg_qp}"
         )
 
     def _create_analysis_plot(
@@ -795,7 +834,7 @@ class MBVisualizerGUI(QMainWindow):
             ax.text(
                 0.5,
                 0.5,
-                "Gráfica no disponible",
+                _("Gráfica no disponible"),
                 transform=ax.transAxes,
                 ha="center",
                 va="center",
@@ -823,7 +862,7 @@ class MBVisualizerGUI(QMainWindow):
             ax.bar(frames, valid_values, color=colors, alpha=0.75, width=0.9)
 
         ax.set_title(title, fontsize=13, fontweight="bold")
-        ax.set_xlabel("Frame")
+        ax.set_xlabel(_("Frame"))
         ax.set_ylabel(ylabel)
         if ylabel == "QP":
             ax.set_ylim(0, 51)
@@ -858,15 +897,15 @@ class MBVisualizerGUI(QMainWindow):
             self.qp_figure,
             self.qp_canvas,
             qp_values,
-            "Evolución del parámetro QP",
+            _("Evolución del parámetro QP"),
             "QP",
         )
         size_ax = self._create_analysis_plot(
             self.size_figure,
             self.size_canvas,
             size_values,
-            "Tamaño de cada frame",
-            "Bytes",
+            _("Tamaño de cada frame"),
+            _("Bytes"),
             frame_types=frame_types,
         )
         self.qp_cursor = self._attach_plot_cursor(
@@ -895,7 +934,7 @@ class MBVisualizerGUI(QMainWindow):
 
     def copy_analysis_summary(self):
         QApplication.clipboard().setText(self.analysis_summary.toPlainText())
-        self.status_bar.showMessage("Resumen copiado al portapapeles", 3000)
+        self.status_bar.showMessage(_("Resumen copiado al portapapeles"), 3000)
 
     def _attach_plot_cursor(self, ax, frame_idx):
         if ax is None:
@@ -1077,8 +1116,8 @@ class MBVisualizerGUI(QMainWindow):
     def load_video_with_mb_extraction(self):
         """Carga un video y extrae automáticamente la información de macrobloques."""
         file_dialog = QFileDialog()
-        file_dialog.setNameFilter("Videos (*.mp4 *.avi *.mkv);;Todos los archivos (*)")
-        file_dialog.setWindowTitle("Seleccionar Video")
+        file_dialog.setNameFilter(_("Videos (*.mp4 *.avi *.mkv);;Todos los archivos (*)"))
+        file_dialog.setWindowTitle(_("Seleccionar Video"))
 
         if file_dialog.exec():
             video_path = file_dialog.selectedFiles()[0]
@@ -1092,13 +1131,13 @@ class MBVisualizerGUI(QMainWindow):
                 )
                 QMessageBox.information(
                     self,
-                    "Video cargado",
-                    f"Video cargado exitosamente con datos de macrobloques.\nArchivo: {os.path.basename(video_path)}",
+                    _("Video cargado"),
+                    f"{_('Video cargado exitosamente con datos de macrobloques.')}\n{_('Archivo:')} {os.path.basename(video_path)}",
                 )
             else:
                 self.clear_analysis_tab()
                 QMessageBox.warning(
-                    self, "Error", f"No se pudo cargar el video:\n{video_path}"
+                    self, _("Error"), f"{_('No se pudo cargar el video:')}\n{video_path}"
                 )
 
     def _find_mb_data_file(self, video_path):
@@ -1118,27 +1157,28 @@ class MBVisualizerGUI(QMainWindow):
 
     def create_console_panel(self):
         """Crea el panel de consola (inferior)"""
-        group = QGroupBox("Consola de Salida")
-        layout = QVBoxLayout(group)
+        self.console_group = QGroupBox(_("Consola de Salida"))
+        layout = QVBoxLayout(self.console_group)
 
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         self.console.setFont(QFont("Courier New", 9))
         layout.addWidget(self.console)
 
-        return group
+        return self.console_group
 
     def create_file_group(self):
         """Grupo para selección de archivos"""
-        group = QGroupBox("Archivos")
-        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout = QVBoxLayout(group)
+        self.file_group = QGroupBox(_("Archivos"))
+        self.file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(self.file_group)
 
         # Archivo de entrada
         input_layout = QHBoxLayout()
-        input_layout.addWidget(QLabel("Video de entrada:"))
+        self.input_video_label = QLabel(_("Video de entrada:"))
+        input_layout.addWidget(self.input_video_label)
         self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("Selecciona archivo Y4M o MP4...")
+        self.input_edit.setPlaceholderText(_("Selecciona archivo Y4M o MP4..."))
         input_layout.addWidget(self.input_edit)
         self.input_btn = QPushButton("...")
         self.input_btn.clicked.connect(self.select_input_file)
@@ -1147,30 +1187,31 @@ class MBVisualizerGUI(QMainWindow):
 
         # Archivo de salida
         output_layout = QHBoxLayout()
-        output_layout.addWidget(QLabel("Video de salida:"))
+        self.output_video_label = QLabel(_("Video de salida:"))
+        output_layout.addWidget(self.output_video_label)
         self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("Nombre del archivo de salida (MP4)...")
+        self.output_edit.setPlaceholderText(_("Nombre del archivo de salida (MP4)..."))
         output_layout.addWidget(self.output_edit)
         layout.addLayout(output_layout)
 
-        return group
+        return self.file_group
 
     def create_basic_params_group(self):
         """Parámetros básicos de codificación"""
-        group = QGroupBox("Codificación Básica")
-        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout = QVBoxLayout(group)
+        self.basic_group = QGroupBox(_("Codificación Básica"))
+        self.basic_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(self.basic_group)
 
         # Codec
         codec_layout = QHBoxLayout()
-        codec_label = QLabel("Codec:")
+        self.codec_label = QLabel(_("Codec:"))
         codec_tooltip = (
             "Codificador de vídeo principal.\n"
             "libx264: genera vídeo H.264/AVC, que es el usado en esta práctica.\n"
             "libx265: genera vídeo H.265/HEVC; puede servir para comparar, pero no es el flujo docente principal."
         )
-        codec_label.setToolTip(codec_tooltip)
-        codec_layout.addWidget(codec_label)
+        self.codec_label.setToolTip(codec_tooltip)
+        codec_layout.addWidget(self.codec_label)
         self.codec_combo = QComboBox()
         self.codec_combo.addItems(["libx264", "libx265"])
         self.codec_combo.setToolTip(codec_tooltip)
@@ -1179,7 +1220,7 @@ class MBVisualizerGUI(QMainWindow):
 
         # Preset
         preset_layout = QHBoxLayout()
-        self.preset_check = QCheckBox("Preset:")
+        self.preset_check = QCheckBox(_("Preset:"))
         preset_tooltip = (
             "Activa el parámetro -preset de x264/x265.\n"
             "Cambia la complejidad interna del codificador manteniendo, aproximadamente, el mismo objetivo de calidad.\n"
@@ -1212,7 +1253,7 @@ class MBVisualizerGUI(QMainWindow):
 
         # Tune
         tune_layout = QHBoxLayout()
-        self.tune_check = QCheckBox("Tune:")
+        self.tune_check = QCheckBox(_("Tune:"))
         tune_tooltip = (
             "Activa el parámetro -tune. Ajusta decisiones internas del codificador según el tipo de contenido o la métrica buscada.\n"
             "film: material cinematográfico general.\n"
@@ -1245,16 +1286,16 @@ class MBVisualizerGUI(QMainWindow):
         self.tune_check.toggled.connect(self.tune_combo.setEnabled)
         self.tune_combo.setEnabled(self.tune_check.isChecked())
 
-        return group
+        return self.basic_group
 
     def create_gop_group(self):
         """Parámetros del GOP"""
-        group = QGroupBox("Group of Pictures (GOP)")
-        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout = QVBoxLayout(group)
+        self.gop_group = QGroupBox(_("Group of Pictures (GOP)"))
+        self.gop_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(self.gop_group)
 
         # Habilitar GOP personalizado
-        self.gop_check = QCheckBox("Configurar longitud del GOP")
+        self.gop_check = QCheckBox(_("Configurar longitud del GOP"))
         self.gop_check.setToolTip(
             "Activa parámetros de estructura temporal del GOP.\n"
             "Permite controlar la distancia entre I-frames y reducir el comportamiento automático del codificador para fines docentes."
@@ -1263,28 +1304,28 @@ class MBVisualizerGUI(QMainWindow):
 
         # Keyint y Min-keyint
         gop_layout = QHBoxLayout()
-        keyint_label = QLabel("Keyint (máximo):")
+        self.keyint_label = QLabel(_("Keyint (máximo):"))
         keyint_tooltip = (
             "Distancia máxima entre dos I-frames.\n"
             "Valores pequeños: más I-frames, más bitrate y acceso aleatorio más frecuente.\n"
             "Valores grandes: GOPs más largos, normalmente mejor compresión."
         )
-        keyint_label.setToolTip(keyint_tooltip)
-        gop_layout.addWidget(keyint_label)
+        self.keyint_label.setToolTip(keyint_tooltip)
+        gop_layout.addWidget(self.keyint_label)
         self.keyint_spin = QSpinBox()
         self.keyint_spin.setRange(1, 1000)
         self.keyint_spin.setValue(60)
         self.keyint_spin.setToolTip(keyint_tooltip)
         gop_layout.addWidget(self.keyint_spin)
 
-        minkeyint_label = QLabel("Min-keyint (mínimo):")
+        self.minkeyint_label = QLabel(_("Min-keyint (mínimo):"))
         minkeyint_tooltip = (
             "Distancia mínima entre dos I-frames.\n"
             "Si coincide con keyint, fuerzas una periodicidad fija de I-frames.\n"
             "Valores menores permiten que el codificador inserte I-frames antes si lo considera útil."
         )
-        minkeyint_label.setToolTip(minkeyint_tooltip)
-        gop_layout.addWidget(minkeyint_label)
+        self.minkeyint_label.setToolTip(minkeyint_tooltip)
+        gop_layout.addWidget(self.minkeyint_label)
         self.minkeyint_spin = QSpinBox()
         self.minkeyint_spin.setRange(1, 1000)
         self.minkeyint_spin.setValue(60)
@@ -1295,7 +1336,7 @@ class MBVisualizerGUI(QMainWindow):
 
         # Scenecut
         scenecut_layout = QHBoxLayout()
-        self.scenecut_check = QCheckBox("Scenecut:")
+        self.scenecut_check = QCheckBox(_("Scenecut:"))
         scenecut_tooltip = (
             "Activa el parámetro scenecut de x264.\n"
             "Controla la inserción automática de I-frames al detectar cambios bruscos de escena.\n"
@@ -1315,7 +1356,7 @@ class MBVisualizerGUI(QMainWindow):
         layout.addLayout(scenecut_layout)
 
         # B-frames
-        self.bframes_check = QCheckBox("Configurar B-frames")
+        self.bframes_check = QCheckBox(_("Configurar B-frames"))
         bframes_tooltip = (
             "Activa el control explícito de B-frames.\n"
             "Los B-frames pueden mejorar la compresión usando referencias al pasado y/o al futuro,\n"
@@ -1325,30 +1366,30 @@ class MBVisualizerGUI(QMainWindow):
         layout.addWidget(self.bframes_check)
 
         bframes_layout = QHBoxLayout()
-        bframes_label = QLabel("B-frames:")
+        self.bframes_label = QLabel(_("B-frames:"))
         bframes_count_tooltip = (
             "Número máximo de B-frames consecutivos (bframes).\n"
             "0: desactiva B-frames.\n"
             "1-2: estructura temporal sencilla y útil para docencia.\n"
             "Valores mayores: más libertad para comprimir mejor, a costa de complejidad."
         )
-        bframes_label.setToolTip(bframes_count_tooltip)
-        bframes_layout.addWidget(bframes_label)
+        self.bframes_label.setToolTip(bframes_count_tooltip)
+        bframes_layout.addWidget(self.bframes_label)
         self.bframes_spin = QSpinBox()
         self.bframes_spin.setRange(0, 16)
         self.bframes_spin.setValue(2)
         self.bframes_spin.setToolTip(bframes_count_tooltip)
         bframes_layout.addWidget(self.bframes_spin)
 
-        badapt_label = QLabel("B-adapt:")
+        self.badapt_label = QLabel(_("B-adapt:"))
         badapt_tooltip = (
             "Modo de decisión/adaptación de B-frames (b-adapt).\n"
             "0: patrón fijo; útil para comparativas reproducibles.\n"
             "1: adaptación rápida.\n"
             "2: adaptación más cuidadosa y normalmente más eficiente."
         )
-        badapt_label.setToolTip(badapt_tooltip)
-        bframes_layout.addWidget(badapt_label)
+        self.badapt_label.setToolTip(badapt_tooltip)
+        bframes_layout.addWidget(self.badapt_label)
         self.badapt_combo = QComboBox()
         self.badapt_combo.addItems(["0", "1", "2"])
         self.badapt_combo.setCurrentText("2")
@@ -1361,16 +1402,16 @@ class MBVisualizerGUI(QMainWindow):
         self.bframes_check.toggled.connect(self._update_gop_control_states)
         self._update_gop_control_states()
 
-        return group
+        return self.gop_group
 
     def create_bitrate_quality_group(self):
         """Parámetros de bitrate y calidad (CBR/VBR disjuntos)"""
-        group = QGroupBox("Modo de Codificación")
-        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout = QVBoxLayout(group)
+        self.bitrate_quality_group = QGroupBox(_("Modo de Codificación"))
+        self.bitrate_quality_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(self.bitrate_quality_group)
 
         # Grupo de radio buttons para modo CBR/VBR
-        self.cbr_radio = QCheckBox("CBR (Bitrate Constante)")
+        self.cbr_radio = QCheckBox(_("CBR (Bitrate Constante)"))
         cbr_tooltip = (
             "Activa un modo de bitrate objetivo aproximado con VBV.\n"
             "El codificador ajusta el QP para acercarse al bitrate indicado.\n"
@@ -1385,14 +1426,14 @@ class MBVisualizerGUI(QMainWindow):
         cbr_layout = QVBoxLayout(self.cbr_widget)
 
         bitrate_layout = QHBoxLayout()
-        bitrate_label = QLabel("Bitrate objetivo (kbps):")
+        self.bitrate_label = QLabel(_("Bitrate objetivo (kbps):"))
         bitrate_tooltip = (
             "Bitrate medio objetivo de vídeo.\n"
             "Valores más altos suelen dar más calidad y más tamaño final.\n"
             "Valores más bajos fuerzan más compresión y normalmente más QP."
         )
-        bitrate_label.setToolTip(bitrate_tooltip)
-        bitrate_layout.addWidget(bitrate_label)
+        self.bitrate_label.setToolTip(bitrate_tooltip)
+        bitrate_layout.addWidget(self.bitrate_label)
         self.bitrate_spin = QSpinBox()
         self.bitrate_spin.setRange(100, 10000)
         self.bitrate_spin.setValue(2000)
@@ -1401,14 +1442,14 @@ class MBVisualizerGUI(QMainWindow):
         cbr_layout.addLayout(bitrate_layout)
 
         buffer_layout = QHBoxLayout()
-        buffer_label = QLabel("Buffer size (kbps):")
+        self.buffer_label = QLabel(_("Buffer size (kbps):"))
         buffer_tooltip = (
             "Tamaño del buffer VBV.\n"
             "Valores pequeños: el bitrate instantáneo varía menos.\n"
             "Valores grandes: el codificador tiene más margen para repartir bits entre frames."
         )
-        buffer_label.setToolTip(buffer_tooltip)
-        buffer_layout.addWidget(buffer_label)
+        self.buffer_label.setToolTip(buffer_tooltip)
+        buffer_layout.addWidget(self.buffer_label)
         self.bufsize_spin = QSpinBox()
         self.bufsize_spin.setRange(100, 20000)
         self.bufsize_spin.setValue(4000)
@@ -1426,7 +1467,7 @@ class MBVisualizerGUI(QMainWindow):
         layout.addWidget(line)
 
         # Modo VBR
-        self.vbr_radio = QCheckBox("VBR (Calidad Variable)")
+        self.vbr_radio = QCheckBox(_("VBR (Calidad Variable)"))
         vbr_tooltip = (
             "Activa un modo de calidad objetivo.\n"
             "El bitrate final se adapta al contenido del vídeo.\n"
@@ -1441,15 +1482,15 @@ class MBVisualizerGUI(QMainWindow):
         vbr_layout = QVBoxLayout(self.vbr_widget)
 
         crf_layout = QHBoxLayout()
-        crf_label = QLabel("CRF (Constant Rate Factor):")
+        self.crf_label = QLabel(_("CRF (Constant Rate Factor):"))
         crf_tooltip = (
             "Control principal del modo CRF.\n"
             "Valores bajos: mejor calidad, más bitrate.\n"
             "Valores altos: peor calidad, menos bitrate.\n"
             "Rango típico para pruebas visuales: 18-28."
         )
-        crf_label.setToolTip(crf_tooltip)
-        crf_layout.addWidget(crf_label)
+        self.crf_label.setToolTip(crf_tooltip)
+        crf_layout.addWidget(self.crf_label)
         self.crf_spin = QSpinBox()
         self.crf_spin.setRange(0, 51)
         self.crf_spin.setValue(23)
@@ -1458,7 +1499,7 @@ class MBVisualizerGUI(QMainWindow):
         vbr_layout.addLayout(crf_layout)
 
         qp_layout = QHBoxLayout()
-        self.qp_check = QCheckBox("QP fijo:")
+        self.qp_check = QCheckBox(_("QP fijo:"))
         qp_tooltip = (
             "Fija directamente el parámetro de cuantización base.\n"
             "Valores bajos: mejor calidad y más bitrate.\n"
@@ -1479,15 +1520,15 @@ class MBVisualizerGUI(QMainWindow):
         self.vbr_widget.setEnabled(False)
         layout.addWidget(self.vbr_widget)
 
-        return group
+        return self.bitrate_quality_group
 
     def create_advanced_group(self):
         """Parámetros avanzados de vectores de movimiento y x264"""
-        group = QGroupBox("Vectores de Movimiento")
-        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout = QVBoxLayout(group)
+        self.advanced_group = QGroupBox(_("Vectores de Movimiento"))
+        self.advanced_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(self.advanced_group)
 
-        self.motion_check = QCheckBox("Configurar búsqueda de movimiento")
+        self.motion_check = QCheckBox(_("Configurar búsqueda de movimiento"))
         self.motion_check.setToolTip(
             "Activa parámetros de búsqueda de movimiento.\n"
             "Estos controles influyen en cómo el codificador busca bloques parecidos en otros frames."
@@ -1496,7 +1537,7 @@ class MBVisualizerGUI(QMainWindow):
 
         # Método de búsqueda
         me_layout = QHBoxLayout()
-        me_label = QLabel("Método (me):")
+        self.me_label = QLabel(_("Método (me):"))
         me_tooltip = (
             "Algoritmo de búsqueda de movimiento.\n"
             "dia: rombo pequeño, rápido pero menos exhaustivo.\n"
@@ -1504,22 +1545,22 @@ class MBVisualizerGUI(QMainWindow):
             "umh: búsqueda más amplia y precisa.\n"
             "esa: exhaustiva, muy costosa en tiempo."
         )
-        me_label.setToolTip(me_tooltip)
-        me_layout.addWidget(me_label)
+        self.me_label.setToolTip(me_tooltip)
+        me_layout.addWidget(self.me_label)
         self.me_combo = QComboBox()
         self.me_combo.addItems(["dia", "hex", "umh", "esa"])
         self.me_combo.setCurrentText("hex")
         self.me_combo.setToolTip(me_tooltip)
         me_layout.addWidget(self.me_combo)
 
-        merange_label = QLabel("Rango (merange):")
+        self.merange_label = QLabel(_("Rango (merange):"))
         merange_tooltip = (
             "Ventana de búsqueda en píxeles para los vectores de movimiento.\n"
             "Valores pequeños: menos coste y menos capacidad para seguir movimientos grandes.\n"
             "Valores grandes: más posibilidades de encontrar coincidencias, pero más tiempo de codificación."
         )
-        merange_label.setToolTip(merange_tooltip)
-        me_layout.addWidget(merange_label)
+        self.merange_label.setToolTip(merange_tooltip)
+        me_layout.addWidget(self.merange_label)
         self.merange_spin = QSpinBox()
         self.merange_spin.setRange(4, 64)
         self.merange_spin.setValue(16)
@@ -1528,21 +1569,21 @@ class MBVisualizerGUI(QMainWindow):
 
         layout.addLayout(me_layout)
 
-        self.x264_advanced_check = QCheckBox("Configurar parámetros avanzados de x264")
+        self.x264_advanced_check = QCheckBox(_("Configurar parámetros avanzados de x264"))
         self.x264_advanced_check.setToolTip(
             "Configurar parámetros avanzados que pueden afectar a los vectores de movimiento"
         )
         layout.addWidget(self.x264_advanced_check)
 
         ref_layout = QHBoxLayout()
-        ref_label = QLabel("Frames de referencia (ref):")
+        self.ref_label = QLabel(_("Frames de referencia (ref):"))
         ref_tooltip = (
             "Número de frames de referencia que el codificador puede consultar en predicción INTER.\n"
             "1: comparación más simple y fácil de interpretar.\n"
             "Valores mayores: más libertad para comprimir mejor, pero más complejidad y coste."
         )
-        ref_label.setToolTip(ref_tooltip)
-        ref_layout.addWidget(ref_label)
+        self.ref_label.setToolTip(ref_tooltip)
+        ref_layout.addWidget(self.ref_label)
         self.ref_spin = QSpinBox()
         self.ref_spin.setRange(1, 16)
         self.ref_spin.setValue(1)
@@ -1551,14 +1592,14 @@ class MBVisualizerGUI(QMainWindow):
         layout.addLayout(ref_layout)
 
         subme_layout = QHBoxLayout()
-        subme_label = QLabel("Refinamiento subpíxel (subme):")
+        self.subme_label = QLabel(_("Refinamiento subpíxel (subme):"))
         subme_tooltip = (
             "Nivel de refinamiento en estimación de movimiento y decisión de modos.\n"
             "Valores bajos: menos coste computacional, decisiones más aproximadas.\n"
             "Valores altos: búsqueda y evaluación más precisas, normalmente más lentas."
         )
-        subme_label.setToolTip(subme_tooltip)
-        subme_layout.addWidget(subme_label)
+        self.subme_label.setToolTip(subme_tooltip)
+        subme_layout.addWidget(self.subme_label)
         self.subme_spin = QSpinBox()
         self.subme_spin.setRange(0, 11)
         self.subme_spin.setValue(7)
@@ -1567,7 +1608,7 @@ class MBVisualizerGUI(QMainWindow):
         layout.addLayout(subme_layout)
 
         partitions_layout = QHBoxLayout()
-        partitions_label = QLabel("Particiones:")
+        self.partitions_label = QLabel(_("Particiones:"))
         partitions_tooltip = (
             "Controla qué particiones INTER se permiten al codificador.\n"
             "all: habilita todas las particiones habituales; es la opción docente recomendada.\n"
@@ -1578,8 +1619,8 @@ class MBVisualizerGUI(QMainWindow):
             "i4x4: permite particiones intra de 4x4.\n"
             "mixed: combinación intermedia pensada para experimentar con restricciones."
         )
-        partitions_label.setToolTip(partitions_tooltip)
-        partitions_layout.addWidget(partitions_label)
+        self.partitions_label.setToolTip(partitions_tooltip)
+        partitions_layout.addWidget(self.partitions_label)
         self.partitions_combo = QComboBox()
         self.partitions_combo.addItems(
             ["all", "none", "p8x8", "b8x8", "i8x8", "i4x4", "mixed"]
@@ -1593,7 +1634,7 @@ class MBVisualizerGUI(QMainWindow):
         self.x264_advanced_check.toggled.connect(self._update_motion_control_states)
         self._update_motion_control_states()
 
-        return group
+        return self.advanced_group
 
     def create_buttons_group(self):
         """Botones de acción"""
@@ -1601,7 +1642,7 @@ class MBVisualizerGUI(QMainWindow):
         group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout = QHBoxLayout(group)
 
-        self.run_btn = QPushButton("Codificar")
+        self.run_btn = QPushButton(_("Codificar"))
         self.run_btn.clicked.connect(self.run_encoding)
         self.run_btn.setStyleSheet(
             "QPushButton { font-weight: bold; padding: 15px; font-size: 20px; min-width: 200px; }"
@@ -1612,11 +1653,11 @@ class MBVisualizerGUI(QMainWindow):
 
     def select_input_file(self):
         """Selecciona archivo de entrada"""
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_path, selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Seleccionar video de entrada",
+            _("Seleccionar video de entrada"),
             "",
-            "Videos (*.y4m *.mp4 *.avi *.mkv *.mov);;Todos los archivos (*)",
+            _("Videos (*.y4m *.mp4 *.avi *.mkv *.mov);;Todos los archivos (*)"),
         )
         if file_path:
             self.input_edit.setText(file_path)
@@ -1699,30 +1740,30 @@ class MBVisualizerGUI(QMainWindow):
 
         if not input_file:
             QMessageBox.warning(
-                self, "Error", "Debes seleccionar un archivo de entrada"
+                self, _("Error"), _("Debes seleccionar un archivo de entrada")
             )
             return
 
         if not output_file:
             QMessageBox.warning(
-                self, "Error", "Debes especificar un nombre para el archivo de salida"
+                self, _("Error"), _("Debes especificar un nombre para el archivo de salida")
             )
             return
 
         # Verificar que el archivo de entrada existe
         if not os.path.exists(input_file):
             QMessageBox.warning(
-                self, "Error", f"El archivo de entrada no existe: {input_file}"
+                self, _("Error"), f"{_('El archivo de entrada no existe:')} {input_file}"
             )
             return
 
         # Construir parámetros
         ffmpeg_params = self.build_ffmpeg_params()
 
-        self.console.append(f"Parámetros FFmpeg: {ffmpeg_params}\n")
+        self.console.append(f"{_('Parámetros FFmpeg')}: {ffmpeg_params}\n")
         self.console.append("\n" + "-" * 50 + "\n")
 
-        self._show_encoding_progress_dialog("Iniciando codificación...")
+        self._show_encoding_progress_dialog(_("Iniciando codificación..."))
 
         # Ejecutar en thread separado
         self.worker = EncodingWorker(
@@ -1744,13 +1785,13 @@ class MBVisualizerGUI(QMainWindow):
     def on_encoding_finished(self, encoded_video):
         """Codificación completada exitosamente"""
         self.run_btn.setEnabled(True)
-        self.status_bar.showMessage("Finalizando carga del vídeo codificado...")
+        self.status_bar.showMessage(_("Finalizando carga del vídeo codificado..."))
         self._update_encoding_progress_dialog(
-            "Finalizando carga del vídeo codificado..."
+            _("Finalizando carga del vídeo codificado...")
         )
 
-        self.console.append("Codificación completada correctamente.\n")
-        self.console.append(f"Video codificado: {encoded_video}\n")
+        self.console.append(f"{_('Codificación completada correctamente.')}\n")
+        self.console.append(f"{_('Video codificado')}: {encoded_video}\n")
         self.console.append("=" * 50 + "\n")
 
         mb_data_path = None
@@ -1759,7 +1800,7 @@ class MBVisualizerGUI(QMainWindow):
                 self.video_player.load_video(encoded_video)
                 mb_data_path = self._find_mb_data_file(encoded_video)
                 if mb_data_path and os.path.exists(mb_data_path):
-                    self.console.append(f"Datos de análisis cargados: {mb_data_path}\n")
+                    self.console.append(f"{_('Datos de análisis cargados:')} {mb_data_path}\n")
 
                 self.update_analysis_tab(
                     video_path=encoded_video, sidecar_path=mb_data_path
@@ -1769,28 +1810,28 @@ class MBVisualizerGUI(QMainWindow):
                     "Datos de frame cargados desde el sidecar de análisis cuando está disponible"
                 )
 
-                self.console.append("Video codificado cargado en la herramienta.\n")
+                self.console.append(f"{_('Video codificado cargado en la herramienta.')}\n")
             except Exception as e:
-                self.console.append(f"Error cargando video en reproductor: {e}\n")
+                self.console.append(f"{_('Error cargando video en reproductor:')} {e}\n")
 
-        self.status_bar.showMessage("Codificación completada")
+        self.status_bar.showMessage(_("Codificación completada"))
         self._close_encoding_progress_dialog()
         QMessageBox.information(
             self,
-            "Completado",
-            "La codificación ha finalizado y el vídeo codificado se ha cargado automáticamente en la herramienta.",
+            _("Completado"),
+            _("La codificación ha finalizado y el vídeo codificado se ha cargado automáticamente en la herramienta."),
         )
 
     def on_encoding_error(self, error_msg):
         """Error en la codificación"""
         self.run_btn.setEnabled(True)
-        self.status_bar.showMessage("Error en la codificación")
+        self.status_bar.showMessage(_("Error en la codificación"))
         self._close_encoding_progress_dialog()
 
         self.console.append(f"ERROR: {error_msg}\n")
         self.console.append("=" * 50 + "\n")
         QMessageBox.critical(
-            self, "Error", f"Error durante la codificación:\n{error_msg}"
+            self, _("Error"), f"{_('Error durante la codificación:')}\n{error_msg}"
         )
 
     def clear_console(self):
@@ -1800,8 +1841,8 @@ class MBVisualizerGUI(QMainWindow):
     def _show_encoding_progress_dialog(self, message):
         """Muestra un popup modal mientras se codifica."""
         if self.encoding_progress_dialog is None:
-            dialog = QProgressDialog("Codificando vídeo...", None, 0, 0, self)
-            dialog.setWindowTitle("Codificación en progreso")
+            dialog = QProgressDialog(_("Codificando vídeo..."), None, 0, 0, self)
+            dialog.setWindowTitle(_("Codificación en progreso"))
             dialog.setWindowModality(Qt.ApplicationModal)
             dialog.setMinimumDuration(0)
             dialog.setCancelButton(None)
@@ -1831,7 +1872,7 @@ class MBVisualizerGUI(QMainWindow):
         self.console_panel.setVisible(not visible)
         self.toggle_console_action.setChecked(not visible)
         self.toggle_console_action.setText(
-            "Ocultar Consola de Log" if not visible else "Mostrar Consola de Log"
+            _("Ocultar Consola de Log") if not visible else _("Mostrar Consola de Log")
         )
 
     def show_settings_dialog(self):
@@ -1841,7 +1882,7 @@ class MBVisualizerGUI(QMainWindow):
             self.ffmpeg_path, self.ffprobe_path = dialog.get_paths()
             self.video_player.ffmpeg_path = self.ffmpeg_path
             self._save_local_settings()
-            self.status_bar.showMessage("Configuración guardada", 3000)
+            self.status_bar.showMessage(_("Configuración guardada"), 3000)
 
     def _settings_file_path(self):
         return Path.cwd() / SETTINGS_FILE_NAME
@@ -1857,11 +1898,14 @@ class MBVisualizerGUI(QMainWindow):
 
             ffmpeg_path = settings_data.get("ffmpeg_path")
             ffprobe_path = settings_data.get("ffprobe_path")
+            language = settings_data.get("language")
 
             if isinstance(ffmpeg_path, str) and ffmpeg_path.strip():
                 self.ffmpeg_path = ffmpeg_path.strip()
             if isinstance(ffprobe_path, str) and ffprobe_path.strip():
                 self.ffprobe_path = ffprobe_path.strip()
+            if isinstance(language, str) and language in {"en", "es", "gl"}:
+                self.language = language
         except (OSError, json.JSONDecodeError) as e:
             print(f"Advertencia: no se pudo cargar la configuración local: {e}")
 
@@ -1870,6 +1914,7 @@ class MBVisualizerGUI(QMainWindow):
         settings_data = {
             "ffmpeg_path": self.ffmpeg_path,
             "ffprobe_path": self.ffprobe_path,
+            "language": self.language,
         }
 
         with open(settings_path, "w", encoding="utf-8") as f:
@@ -1879,6 +1924,95 @@ class MBVisualizerGUI(QMainWindow):
         """Muestra el diálogo Acerca de"""
         dialog = AboutDialog(self)
         dialog.exec()
+
+    def _retranslate_ui(self):
+        self.file_menu.setTitle(_("Archivo"))
+        self.settings_menu.setTitle(_("Configuración"))
+        self.settings_action.setText(_("Configuración"))
+        self.language_menu.setTitle(_("Language / Idioma"))
+        self.load_video_action.setText(_("Cargar video"))
+        self.exit_action.setText(_("Salir"))
+        self.view_menu.setTitle(_("Ver"))
+        self.toggle_console_action.setText(
+            _("Ocultar Consola de Log")
+            if self.console_panel.isVisible()
+            else _("Mostrar Consola de Log")
+        )
+        self.toggle_config_action.setText(_("Mostrar Configuración"))
+        self.toggle_inspector_action.setText(_("Mostrar Inspector"))
+        self.toggle_analysis_action.setText(_("Mostrar gráficas"))
+        self.help_menu.setTitle(_("Ayuda"))
+        self.about_action.setText(_("Acerca de"))
+        for lang_code, lang_label in (
+            ("en", "English"),
+            ("es", "Español"),
+            ("gl", "Galego"),
+        ):
+            action = self.language_actions[lang_code]
+            action.setText(_(lang_label))
+            action.setChecked(self.language == lang_code)
+
+        self.encoding_config_label.setText(_("Configuración de codificación"))
+        for header_btn, title in self._collapsible_sections:
+            header_btn.setText(f"▾ {_(title)}" if header_btn.isChecked() else f"▸ {_(title)}")
+        self.video_workspace_title.setText(_("Video y overlay de macroblocks"))
+        self.plots_group.setTitle(_("Análisis temporal"))
+        self.analysis_view_label.setText(_("Vista:"))
+        current_mode = self.analysis_view_mode_combo.currentData() or "Ambas"
+        self.analysis_view_mode_combo.blockSignals(True)
+        self.analysis_view_mode_combo.clear()
+        for mode_key in ("Ambas", "Solo QP", "Solo tamaño"):
+            self.analysis_view_mode_combo.addItem(_(mode_key), mode_key)
+        self.analysis_view_mode_combo.setCurrentIndex(
+            max(0, self.analysis_view_mode_combo.findData(current_mode))
+        )
+        self.analysis_view_mode_combo.blockSignals(False)
+        self._update_analysis_view_mode(current_mode)
+
+        self.inspector_title.setText(_("Inspector"))
+        self.console_group.setTitle(_("Consola de Salida"))
+        self.file_group.setTitle(_("Archivos"))
+        self.input_video_label.setText(_("Video de entrada:"))
+        self.input_edit.setPlaceholderText(_("Selecciona archivo Y4M o MP4..."))
+        self.output_video_label.setText(_("Video de salida:"))
+        self.output_edit.setPlaceholderText(_("Nombre del archivo de salida (MP4)..."))
+        self.basic_group.setTitle(_("Codificación Básica"))
+        self.codec_label.setText(_("Codec:"))
+        self.preset_check.setText(_("Preset:"))
+        self.tune_check.setText(_("Tune:"))
+        self.gop_group.setTitle(_("Group of Pictures (GOP)"))
+        self.gop_check.setText(_("Configurar longitud del GOP"))
+        self.keyint_label.setText(_("Keyint (máximo):"))
+        self.minkeyint_label.setText(_("Min-keyint (mínimo):"))
+        self.scenecut_check.setText(_("Scenecut:"))
+        self.bframes_check.setText(_("Configurar B-frames"))
+        self.bframes_label.setText(_("B-frames:"))
+        self.badapt_label.setText(_("B-adapt:"))
+        self.bitrate_quality_group.setTitle(_("Modo de Codificación"))
+        self.cbr_radio.setText(_("CBR (Bitrate Constante)"))
+        self.bitrate_label.setText(_("Bitrate objetivo (kbps):"))
+        self.buffer_label.setText(_("Buffer size (kbps):"))
+        self.vbr_radio.setText(_("VBR (Calidad Variable)"))
+        self.crf_label.setText(_("CRF (Constant Rate Factor):"))
+        self.qp_check.setText(_("QP fijo:"))
+        self.advanced_group.setTitle(_("Vectores de Movimiento"))
+        self.motion_check.setText(_("Configurar búsqueda de movimiento"))
+        self.me_label.setText(_("Método (me):"))
+        self.merange_label.setText(_("Rango (merange):"))
+        self.x264_advanced_check.setText(_("Configurar parámetros avanzados de x264"))
+        self.ref_label.setText(_("Frames de referencia (ref):"))
+        self.subme_label.setText(_("Refinamiento subpíxel (subme):"))
+        self.partitions_label.setText(_("Particiones:"))
+        self.run_btn.setText(_("Codificar"))
+        self._update_quick_metrics()
+        if self.current_analysis_sidecar or self.current_stats_file:
+            self.update_analysis_tab()
+        else:
+            self.clear_analysis_tab()
+        if self.encoding_progress_dialog is not None:
+            self.encoding_progress_dialog.setWindowTitle(_("Codificación en progreso"))
+        if hasattr(self.video_player, "_retranslate_ui"):
+            self.video_player._retranslate_ui()
 
     def on_cbr_toggled(self, checked):
         """Maneja el cambio del checkbox CBR"""
@@ -1974,7 +2108,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent=None, ffmpeg_path="ffmpeg", ffprobe_path="ffprobe"):
         super().__init__(parent)
-        self.setWindowTitle("Configuración")
+        self.setWindowTitle(_("Configuración"))
         self.setModal(True)
 
         self.ffmpeg_path = ffmpeg_path
@@ -1983,12 +2117,12 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Grupo FFmpeg
-        ffmpeg_group = QGroupBox("Ubicación de FFmpeg")
+        ffmpeg_group = QGroupBox(_("Ubicación de FFmpeg"))
         ffmpeg_layout = QVBoxLayout(ffmpeg_group)
 
         # FFmpeg path
         ffmpeg_path_layout = QHBoxLayout()
-        ffmpeg_label = QLabel("FFmpeg:")
+        ffmpeg_label = QLabel(_("FFmpeg:"))
         ffmpeg_tooltip = (
             "Ruta al ejecutable de FFmpeg que usará la aplicación para codificar y extraer datos de bajo nivel.\n"
             "Para esta práctica se recomienda apuntar a FFmpeg 6.1.1."
@@ -2006,7 +2140,7 @@ class SettingsDialog(QDialog):
 
         # FFprobe path
         ffprobe_path_layout = QHBoxLayout()
-        ffprobe_label = QLabel("FFprobe:")
+        ffprobe_label = QLabel(_("FFprobe:"))
         ffprobe_tooltip = (
             "Ruta al ejecutable de FFprobe, usado para leer metadatos como duración, fps o resolución.\n"
             "Debe corresponder a la misma instalación que FFmpeg siempre que sea posible."
@@ -2028,11 +2162,11 @@ class SettingsDialog(QDialog):
         buttons_layout = QHBoxLayout()
         buttons_layout.addStretch()
 
-        cancel_btn = QPushButton("Cancelar")
+        cancel_btn = QPushButton(_("Cancelar"))
         cancel_btn.clicked.connect(self.reject)
         buttons_layout.addWidget(cancel_btn)
 
-        save_btn = QPushButton("Guardar")
+        save_btn = QPushButton(_("Guardar"))
         save_btn.clicked.connect(self.accept)
         save_btn.setDefault(True)
         buttons_layout.addWidget(save_btn)
@@ -2043,16 +2177,16 @@ class SettingsDialog(QDialog):
 
     def browse_ffmpeg(self):
         """Seleccionar archivo FFmpeg"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar FFmpeg", "", "Todos los archivos (*)"
+        file_path, selected_filter = QFileDialog.getOpenFileName(
+            self, _("Seleccionar FFmpeg"), "", _("Todos los archivos (*)")
         )
         if file_path:
             self.ffmpeg_edit.setText(file_path)
 
     def browse_ffprobe(self):
         """Seleccionar archivo FFprobe"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar FFprobe", "", "Todos los archivos (*)"
+        file_path, selected_filter = QFileDialog.getOpenFileName(
+            self, _("Seleccionar FFprobe"), "", _("Todos los archivos (*)")
         )
         if file_path:
             self.ffprobe_edit.setText(file_path)
@@ -2067,7 +2201,7 @@ class AboutDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Acerca de H264TT")
+        self.setWindowTitle(_("Acerca de H264TT"))
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -2078,7 +2212,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title_label)
 
         # Versión
-        version_label = QLabel("Versión 0.1")
+        version_label = QLabel(_("Versión 0.1"))
         layout.addWidget(version_label)
 
         # Autor
@@ -2087,8 +2221,7 @@ class AboutDialog(QDialog):
 
         # Descripción
         desc_label = QLabel(
-            "H264 Teaching Tool para análisis y visualización docente\n"
-            "de codificación H.264/AVC con FFmpeg."
+            _("H264 Teaching Tool para análisis y visualización docente\nde codificación H.264/AVC con FFmpeg.")
         )
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
@@ -2096,15 +2229,12 @@ class AboutDialog(QDialog):
         layout.addSpacing(10)
 
         # Licencia
-        license_group = QGroupBox("Licencia")
+        license_group = QGroupBox(_("Licencia"))
         license_layout = QVBoxLayout(license_group)
 
         license_text = QTextEdit()
         license_text.setPlainText(
-            "Copyright (c) 2026 Valentin Barral\n\n"
-            "Licencia Creative Commons con atribución (CC BY 4.0).\n\n"
-            "Debe darse atribución apropiada al autor e indicarse si se hicieron cambios.\n\n"
-            "Más información: https://creativecommons.org/licenses/by/4.0/"
+            _("Copyright (c) 2026 Valentin Barral\n\nLicencia Creative Commons con atribución (CC BY 4.0).\n\nDebe darse atribución apropiada al autor e indicarse si se hicieron cambios.\n\nMás información: https://creativecommons.org/licenses/by/4.0/")
         )
         license_text.setReadOnly(True)
         license_text.setMaximumHeight(150)
@@ -2113,7 +2243,7 @@ class AboutDialog(QDialog):
         layout.addWidget(license_group)
 
         # Botón cerrar
-        close_btn = QPushButton("Cerrar")
+        close_btn = QPushButton(_("Cerrar"))
         close_btn.clicked.connect(self.accept)
         close_btn.setDefault(True)
         layout.addWidget(close_btn)
@@ -2145,6 +2275,7 @@ class VideoPlayerWidget(QWidget):
         self.motion_vectors_enabled = False
         self.overlay_opacity = 0.35  # Opacidad por defecto (35%)
         self.current_frame_data = None  # Último frame leído
+        self._collapsible_sections = []
 
         # Datos de macrobloques (se cargarán cuando se seleccione un video procesado)
         self.mb_data = None
@@ -2184,7 +2315,7 @@ class VideoPlayerWidget(QWidget):
         video_grid.setContentsMargins(0, 0, 0, 0)
 
         # Área de video (usando QLabel para mostrar frames)
-        self.video_label = QLabel("No video loaded")
+        self.video_label = QLabel(_("No video loaded"))
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet(
             "border: 2px solid #ccc; background-color: #f0f0f0;"
@@ -2200,17 +2331,17 @@ class VideoPlayerWidget(QWidget):
 
         # Botones de reproducción
         self.play_btn = QPushButton("▶")
-        self.play_btn.setToolTip("Play/Pause")
+        self.play_btn.setToolTip(_("Play/Pause"))
         self.play_btn.clicked.connect(self.toggle_play_pause)
         controls_layout.addWidget(self.play_btn)
 
         self.prev_frame_btn = QPushButton("⏮")
-        self.prev_frame_btn.setToolTip("Previous Frame")
+        self.prev_frame_btn.setToolTip(_("Previous Frame"))
         self.prev_frame_btn.clicked.connect(self.prev_frame)
         controls_layout.addWidget(self.prev_frame_btn)
 
         self.next_frame_btn = QPushButton("⏭")
-        self.next_frame_btn.setToolTip("Next Frame")
+        self.next_frame_btn.setToolTip(_("Next Frame"))
         self.next_frame_btn.clicked.connect(self.next_frame)
         controls_layout.addWidget(self.next_frame_btn)
 
@@ -2227,27 +2358,28 @@ class VideoPlayerWidget(QWidget):
         controls_layout.addWidget(self.time_label)
 
         # Checkbox para overlay
-        self.overlay_check = QCheckBox("Mostrar Overlay MB")
+        self.overlay_check = QCheckBox(_("Mostrar Overlay MB"))
         self.overlay_check.setChecked(False)
         self.overlay_check.stateChanged.connect(self.toggle_overlay)
         controls_layout.addWidget(self.overlay_check)
 
-        self.motion_vectors_check = QCheckBox("Mostrar vectores MV")
+        self.motion_vectors_check = QCheckBox(_("Mostrar vectores MV"))
         self.motion_vectors_check.setChecked(False)
         self.motion_vectors_check.setToolTip(
-            "Muestra los vectores de movimiento extraídos del bitstream H.264."
+            _("Muestra los vectores de movimiento extraídos del bitstream H.264.")
         )
         self.motion_vectors_check.stateChanged.connect(self.toggle_motion_vectors)
         controls_layout.addWidget(self.motion_vectors_check)
 
         # Control de opacidad
-        controls_layout.addWidget(QLabel("Opacidad:"))
+        self.opacity_title_label = QLabel(_("Opacidad:"))
+        controls_layout.addWidget(self.opacity_title_label)
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
         self.opacity_slider.setValue(35)  # 35% por defecto
         self.opacity_slider.setMaximumWidth(150)
-        self.opacity_slider.setToolTip("Ajusta la transparencia del overlay")
+        self.opacity_slider.setToolTip(_("Ajusta la transparencia del overlay"))
         self.opacity_slider.valueChanged.connect(self.update_overlay_opacity)
         controls_layout.addWidget(self.opacity_slider)
 
@@ -2321,7 +2453,8 @@ class VideoPlayerWidget(QWidget):
         stats_layout.setContentsMargins(0, 0, 0, 0)
 
         frame_layout = QHBoxLayout()
-        frame_layout.addWidget(QLabel("Frame:"))
+        self.frame_title_label = QLabel(_("Frame:"))
+        frame_layout.addWidget(self.frame_title_label)
         self.frame_number_label = QLabel("-")
         self.frame_number_label.setStyleSheet("font-weight: bold;")
         frame_layout.addWidget(self.frame_number_label)
@@ -2329,7 +2462,8 @@ class VideoPlayerWidget(QWidget):
         stats_layout.addLayout(frame_layout)
 
         type_layout = QHBoxLayout()
-        type_layout.addWidget(QLabel("Tipo:"))
+        self.frame_type_title_label = QLabel(_("Tipo:"))
+        type_layout.addWidget(self.frame_type_title_label)
         self.frame_type_label = QLabel("-")
         self.frame_type_label.setStyleSheet(
             "font-weight: bold; font-size: 26px; min-width: 34px;"
@@ -2339,7 +2473,8 @@ class VideoPlayerWidget(QWidget):
         stats_layout.addLayout(type_layout)
 
         qp_layout = QHBoxLayout()
-        qp_layout.addWidget(QLabel("QP medio:"))
+        self.frame_qp_title_label = QLabel(f"{_('QP medio')}:")
+        qp_layout.addWidget(self.frame_qp_title_label)
         self.frame_qp_label = QLabel("-")
         self.frame_qp_label.setStyleSheet("font-weight: bold;")
         qp_layout.addWidget(self.frame_qp_label)
@@ -2347,7 +2482,8 @@ class VideoPlayerWidget(QWidget):
         stats_layout.addLayout(qp_layout)
 
         size_layout = QHBoxLayout()
-        size_layout.addWidget(QLabel("Tamaño:"))
+        self.frame_size_title_label = QLabel(_("Tamaño:"))
+        size_layout.addWidget(self.frame_size_title_label)
         self.frame_size_label = QLabel("-")
         self.frame_size_label.setStyleSheet("font-weight: bold;")
         size_layout.addWidget(self.frame_size_label)
@@ -2357,12 +2493,14 @@ class VideoPlayerWidget(QWidget):
         stats_layout.addWidget(QLabel(""))
 
         # Macroblock statistics
-        stats_layout.addWidget(QLabel("Macrobloques:"))
+        self.macroblocks_title_label = QLabel(_("Macrobloques:"))
+        stats_layout.addWidget(self.macroblocks_title_label)
         self.mb_stats_layout = QVBoxLayout()
 
         # INTRA blocks
         intra_layout = QHBoxLayout()
-        intra_layout.addWidget(QLabel("INTRA (Rojo):"))
+        self.intra_title_label = QLabel(_("INTRA (Rojo):"))
+        intra_layout.addWidget(self.intra_title_label)
         self.intra_label = QLabel("-")
         self.intra_label.setStyleSheet("color: red; font-weight: bold;")
         intra_layout.addWidget(self.intra_label)
@@ -2371,7 +2509,8 @@ class VideoPlayerWidget(QWidget):
 
         # SKIP blocks
         skip_layout = QHBoxLayout()
-        skip_layout.addWidget(QLabel("SKIP (Verde):"))
+        self.skip_title_label = QLabel(_("SKIP (Verde):"))
+        skip_layout.addWidget(self.skip_title_label)
         self.skip_label = QLabel("-")
         self.skip_label.setStyleSheet("color: green; font-weight: bold;")
         skip_layout.addWidget(self.skip_label)
@@ -2380,7 +2519,8 @@ class VideoPlayerWidget(QWidget):
 
         # INTER blocks
         inter_layout = QHBoxLayout()
-        inter_layout.addWidget(QLabel("INTER (Azul):"))
+        self.inter_title_label = QLabel(_("INTER (Azul):"))
+        inter_layout.addWidget(self.inter_title_label)
         self.inter_label = QLabel("-")
         self.inter_label.setStyleSheet("color: blue; font-weight: bold;")
         inter_layout.addWidget(self.inter_label)
@@ -2416,7 +2556,7 @@ class VideoPlayerWidget(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        header_btn = QPushButton(f"▾ {title}" if expanded else f"▸ {title}")
+        header_btn = QPushButton(f"▾ {_(title)}" if expanded else f"▸ {_(title)}")
         header_btn.setCheckable(True)
         header_btn.setChecked(expanded)
         header_btn.setStyleSheet(
@@ -2431,16 +2571,17 @@ class VideoPlayerWidget(QWidget):
         outer_layout.addWidget(content_widget)
 
         def toggle_section(checked):
-            header_btn.setText(f"▾ {title}" if checked else f"▸ {title}")
+            header_btn.setText(f"▾ {_(title)}" if checked else f"▸ {_(title)}")
             content_widget.setVisible(checked)
 
         header_btn.toggled.connect(toggle_section)
+        self._collapsible_sections.append((header_btn, title))
         return container
 
     def _create_legend_widget(self):
         """Crea el widget de leyenda con todos los tipos de MB y segmentación."""
-        legend_group = QGroupBox("Leyenda de Macrobloques")
-        legend_layout = QVBoxLayout(legend_group)
+        self.legend_group = QGroupBox(_("Leyenda de Macrobloques"))
+        legend_layout = QVBoxLayout(self.legend_group)
 
         # Crear área scrollable para la leyenda
         scroll = QScrollArea()
@@ -2451,102 +2592,55 @@ class VideoPlayerWidget(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
 
         mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Modo de leyenda:"))
+        self.legend_mode_label = QLabel(_("Modo de leyenda:"))
+        mode_layout.addWidget(self.legend_mode_label)
         self.legend_mode_combo = QComboBox()
-        self.legend_mode_combo.addItems(["Compacto", "Detallado"])
-        self.legend_mode_combo.setCurrentText("Detallado")
+        self.legend_mode_combo.addItem(_("Compacto"), "Compacto")
+        self.legend_mode_combo.addItem(_("Detallado"), "Detallado")
+        self.legend_mode_combo.setCurrentIndex(1)
         mode_layout.addWidget(self.legend_mode_combo)
         mode_layout.addStretch()
         scroll_layout.addLayout(mode_layout)
 
-        intro_label = QLabel(
-            "Símbolos basados en la salida de depuración de FFmpeg/libx264. "
-            "Cada fila resume color, símbolo, nombre y una explicación breve del modo de codificación."
+        self.legend_intro_label = QLabel(
+            _("Símbolos basados en la salida de depuración de FFmpeg/libx264. Cada fila resume color, símbolo, nombre y una explicación breve del modo de codificación.")
         )
-        intro_label.setWordWrap(True)
-        intro_label.setStyleSheet("color: #556; font-size: 9pt; margin-bottom: 6px;")
-        scroll_layout.addWidget(intro_label)
+        self.legend_intro_label.setWordWrap(True)
+        self.legend_intro_label.setStyleSheet("color: #556; font-size: 9pt; margin-bottom: 6px;")
+        scroll_layout.addWidget(self.legend_intro_label)
 
         # Colores y símbolos de MB (BGR format como en OpenCV)
         # Los colores están en formato BGR, necesitamos convertir a RGB para Qt
         # IMPORTANTE: Estos valores deben coincidir exactamente con self.colors en MBVisualizer
         mb_types_info = {
             "INTRA": [
-                (
-                    "P",
-                    (0, 0, 139),
-                    "PCM — bloque codificado como píxeles crudos, sin predicción ni transformada.",
-                ),
-                (
-                    "A",
-                    (0, 69, 255),
-                    "AC Prediction — intra con predicción de coeficientes AC; raro en H.264, más típico de MPEG-4.",
-                ),
-                (
-                    "i",
-                    (0, 100, 255),
-                    "Intra 4×4 — predicción espacial en bloques pequeños, útil para detalle fino.",
-                ),
-                (
-                    "I",
-                    (0, 0, 200),
-                    "Intra 16×16 — predicción espacial del macroblock completo, típica en zonas más planas.",
-                ),
+                ("P", (0, 0, 139), "PCM — bloque codificado como píxeles crudos, sin predicción ni transformada."),
+                ("A", (0, 69, 255), "AC Prediction — intra con predicción de coeficientes AC; raro en H.264, más típico de MPEG-4."),
+                ("i", (0, 100, 255), "Intra 4×4 — predicción espacial en bloques pequeños, útil para detalle fino."),
+                ("I", (0, 0, 200), "Intra 16×16 — predicción espacial del macroblock completo, típica en zonas más planas."),
             ],
             "SKIP": [
-                (
-                    "S",
-                    (0, 180, 0),
-                    "Skip — no transmite residuo; reutiliza la predicción de movimiento del bloque.",
-                ),
-                (
-                    "d",
-                    (100, 220, 0),
-                    "Direct Skip — modo B muy eficiente con predicción temporal directa y residuo nulo.",
-                ),
-                (
-                    "g",
-                    (0, 100, 0),
-                    "GMC Skip — variante con compensación de movimiento global; rara fuera de MPEG-4.",
-                ),
+                ("S", (0, 180, 0), "Skip — no transmite residuo; reutiliza la predicción de movimiento del bloque."),
+                ("d", (100, 220, 0), "Direct Skip — modo B muy eficiente con predicción temporal directa y residuo nulo."),
+                ("g", (0, 100, 0), "GMC Skip — variante con compensación de movimiento global; rara fuera de MPEG-4."),
             ],
             "INTER": [
-                (
-                    "D",
-                    (200, 0, 0),
-                    "Direct — predicción temporal directa en B-frames con movimiento explícito.",
-                ),
-                (
-                    "G",
-                    (200, 0, 100),
-                    "GMC — compensación de movimiento global; heredado de MPEG-4, no habitual en H.264.",
-                ),
-                (
-                    ">",
-                    (200, 100, 0),
-                    "Forward (L0) — usa referencia pasada; es la predicción inter más común en P-frames.",
-                ),
-                (
-                    "<",
-                    (200, 200, 0),
-                    "Backward (L1) — usa referencia futura; aparece en B-frames.",
-                ),
-                (
-                    "X",
-                    (200, 0, 200),
-                    "Bi-pred — combina referencia pasada y futura para mejorar la predicción.",
-                ),
+                ("D", (200, 0, 0), "Direct — predicción temporal directa en B-frames con movimiento explícito."),
+                ("G", (200, 0, 100), "GMC — compensación de movimiento global; heredado de MPEG-4, no habitual en H.264."),
+                (">", (200, 100, 0), "Forward (L0) — usa referencia pasada; es la predicción inter más común en P-frames."),
+                ("<", (200, 200, 0), "Backward (L1) — usa referencia futura; aparece en B-frames."),
+                ("X", (200, 0, 200), "Bi-pred — combina referencia pasada y futura para mejorar la predicción."),
             ],
         }
 
         self.legend_detail_labels = []
+        self._legend_translatable = []
 
-        # Añadir cada categoría
         for category, types in mb_types_info.items():
             cat_label = QLabel(f"<b>{category}</b>")
             scroll_layout.addWidget(cat_label)
 
-            for symbol, color_bgr, description in types:
+            for symbol, color_bgr, desc_key in types:
                 type_layout = QHBoxLayout()
 
                 b, g, r = color_bgr
@@ -2555,55 +2649,53 @@ class VideoPlayerWidget(QWidget):
                 color_label.setStyleSheet(
                     f"background-color: rgb({r},{g},{b}); border: 1px solid black;"
                 )
-                color_label.setToolTip(description)
+                color_label.setToolTip(_(desc_key))
                 type_layout.addWidget(color_label)
 
                 symbol_label = QLabel(f"<b>{symbol}</b>")
                 symbol_label.setFixedWidth(25)
-                symbol_label.setToolTip(description)
+                symbol_label.setToolTip(_(desc_key))
                 type_layout.addWidget(symbol_label)
 
-                name_label = QLabel(description.split("—")[0].strip())
+                name_label = QLabel(_(desc_key).split("—")[0].strip())
                 name_label.setMinimumWidth(120)
-                name_label.setToolTip(description)
+                name_label.setToolTip(_(desc_key))
                 type_layout.addWidget(name_label)
 
-                desc_label = QLabel(description)
+                desc_label = QLabel(_(desc_key))
                 desc_label.setWordWrap(True)
                 desc_label.setStyleSheet("font-size: 9pt;")
-                desc_label.setToolTip(description)
+                desc_label.setToolTip(_(desc_key))
                 type_layout.addWidget(desc_label)
                 self.legend_detail_labels.append(desc_label)
+                self._legend_translatable.append((color_label, symbol_label, name_label, desc_label, desc_key))
 
                 type_layout.addStretch()
                 scroll_layout.addLayout(type_layout)
 
             scroll_layout.addWidget(QLabel(""))
 
-        # Sección de segmentación
-        seg_label = QLabel("<b>Segmentación</b>")
-        scroll_layout.addWidget(seg_label)
+        self.seg_label = QLabel(f"<b>{_('Segmentación')}</b>")
+        scroll_layout.addWidget(self.seg_label)
 
         segmentation_info = [
-            (
-                "+",
-                "8×8 — divide el macroblock en cuatro subbloques para más flexibilidad.",
-            ),
+            ("+", "8×8 — divide el macroblock en cuatro subbloques para más flexibilidad."),
             ("-", "16×8 — partición horizontal en dos mitades."),
             ("|", "8×16 — partición vertical en dos mitades."),
             (" ", "16×16 — bloque completo sin subdivisión interna."),
         ]
 
-        for symbol, description in segmentation_info:
+        for symbol, desc_key in segmentation_info:
             seg_layout = QHBoxLayout()
             symbol_label = QLabel(f"<b>{repr(symbol)}</b>")
-            symbol_label.setToolTip(description)
+            symbol_label.setToolTip(_(desc_key))
             seg_layout.addWidget(symbol_label)
-            desc_label = QLabel(description)
+            desc_label = QLabel(_(desc_key))
             desc_label.setWordWrap(True)
-            desc_label.setToolTip(description)
+            desc_label.setToolTip(_(desc_key))
             seg_layout.addWidget(desc_label)
             self.legend_detail_labels.append(desc_label)
+            self._legend_translatable.append((symbol_label, None, None, desc_label, desc_key))
             seg_layout.addStretch()
             scroll_layout.addLayout(seg_layout)
 
@@ -2614,12 +2706,57 @@ class VideoPlayerWidget(QWidget):
         self.legend_mode_combo.currentTextChanged.connect(self._update_legend_mode)
         self._update_legend_mode(self.legend_mode_combo.currentText())
 
-        return legend_group
+        return self.legend_group
 
     def _update_legend_mode(self, mode_text):
-        detailed = mode_text == "Detallado"
+        detailed = (self.legend_mode_combo.currentData() or mode_text) == "Detallado"
         for label in getattr(self, "legend_detail_labels", []):
             label.setVisible(detailed)
+
+    def _retranslate_ui(self):
+        if not self.cap:
+            self.video_label.setText(_("No video loaded"))
+        self.play_btn.setToolTip(_("Play/Pause"))
+        self.prev_frame_btn.setToolTip(_("Previous Frame"))
+        self.next_frame_btn.setToolTip(_("Next Frame"))
+        self.overlay_check.setText(_("Mostrar Overlay MB"))
+        self.motion_vectors_check.setText(_("Mostrar vectores MV"))
+        self.motion_vectors_check.setToolTip(_("Muestra los vectores de movimiento extraídos del bitstream H.264."))
+        self.opacity_title_label.setText(_("Opacidad:"))
+        self.opacity_slider.setToolTip(_("Ajusta la transparencia del overlay"))
+        self.frame_title_label.setText(_("Frame:"))
+        self.frame_type_title_label.setText(_("Tipo:"))
+        self.frame_qp_title_label.setText(f"{_('QP medio')}:")
+        self.frame_size_title_label.setText(_("Tamaño:"))
+        self.macroblocks_title_label.setText(_("Macrobloques:"))
+        self.intra_title_label.setText(_("INTRA (Rojo):"))
+        self.skip_title_label.setText(_("SKIP (Verde):"))
+        self.inter_title_label.setText(_("INTER (Azul):"))
+        for header_btn, title in self._collapsible_sections:
+            header_btn.setText(f"▾ {_(title)}" if header_btn.isChecked() else f"▸ {_(title)}")
+        self.legend_group.setTitle(_("Leyenda de Macrobloques"))
+        self.legend_mode_label.setText(_("Modo de leyenda:"))
+        current_mode = self.legend_mode_combo.currentData() or "Detallado"
+        self.legend_mode_combo.blockSignals(True)
+        self.legend_mode_combo.clear()
+        self.legend_mode_combo.addItem(_("Compacto"), "Compacto")
+        self.legend_mode_combo.addItem(_("Detallado"), "Detallado")
+        self.legend_mode_combo.setCurrentIndex(max(0, self.legend_mode_combo.findData(current_mode)))
+        self.legend_mode_combo.blockSignals(False)
+        self.legend_intro_label.setText(_("Símbolos basados en la salida de depuración de FFmpeg/libx264. Cada fila resume color, símbolo, nombre y una explicación breve del modo de codificación."))
+        self.seg_label.setText(f"<b>{_('Segmentación')}</b>")
+        for entry in getattr(self, "_legend_translatable", []):
+            first, second, name_lbl, desc_lbl, desc_key = entry
+            translated = _(desc_key)
+            desc_lbl.setText(translated)
+            desc_lbl.setToolTip(translated)
+            first.setToolTip(translated)
+            if second is not None:
+                second.setToolTip(translated)
+            if name_lbl is not None:
+                name_lbl.setText(translated.split("—")[0].strip())
+                name_lbl.setToolTip(translated)
+        self._update_legend_mode(current_mode)
 
     def _update_frame_info(self):
         """Actualiza la información del frame actual."""
@@ -2790,7 +2927,7 @@ class VideoPlayerWidget(QWidget):
 
         except Exception as e:
             print(f"Error cargando video: {e}")
-            QMessageBox.warning(self, "Error", f"No se pudo cargar el video:\n{str(e)}")
+            QMessageBox.warning(self, _("Error"), f"{_('No se pudo cargar el video:')}\n{str(e)}")
             return False
 
     def _extract_mb_data_from_video(self, video_path):
@@ -2800,7 +2937,7 @@ class VideoPlayerWidget(QWidget):
 
         try:
             print(f"Extrayendo datos de macrobloques de: {video_path}")
-            self._show_status_message("Extrayendo datos de macrobloques...")
+            self._show_status_message(_("Extrayendo datos de macrobloques..."))
 
             # Crear archivo temporal para la salida de debug
             with tempfile.NamedTemporaryFile(
@@ -2824,7 +2961,7 @@ class VideoPlayerWidget(QWidget):
 
             print(f"Ejecutando: {' '.join(cmd)}")
             self._show_status_message(
-                "Ejecutando análisis de macrobloques con FFmpeg..."
+                _("Ejecutando análisis de macrobloques con FFmpeg...")
             )
 
             # Ejecutar comando y capturar stderr (donde va el debug output)
@@ -2835,10 +2972,10 @@ class VideoPlayerWidget(QWidget):
                 print(
                     f"Advertencia: FFmpeg terminó con código {result.returncode}, intentando procesar datos parciales"
                 )
-                self._show_status_message("Procesando datos parciales...")
+                self._show_status_message(_("Procesando datos parciales..."))
 
             # Parsear la salida del log
-            self._show_status_message("Procesando datos de macrobloques...")
+            self._show_status_message(_("Procesando datos de macrobloques..."))
             self._parse_mb_debug_output(temp_log_path)
 
             # Limpiar archivo temporal
@@ -2847,13 +2984,13 @@ class VideoPlayerWidget(QWidget):
             except OSError:
                 pass
 
-            self._show_status_message("Datos de macrobloques cargados exitosamente")
+            self._show_status_message(_("Datos de macrobloques cargados exitosamente"))
 
         except Exception as e:
             print(f"Error extrayendo datos de macrobloques: {e}")
             self.mb_data = False
             self.frame_mb_data = []
-            self._show_status_message("Error al extraer datos de macrobloques")
+            self._show_status_message(_("Error al extraer datos de macrobloques"))
 
     def _load_frame_info_from_file(self, video_path):
         """Carga información de QP y tamaño de frames desde archivo .info si existe."""
@@ -2943,7 +3080,7 @@ class VideoPlayerWidget(QWidget):
                     f"✓ Cargados {len(qp_values)} valores QP y {len(size_values)} valores SIZE desde {info_file}"
                 )
                 self._show_status_message(
-                    f"Información de frames cargada desde .info ({len(qp_values)} frames)"
+                    f"{_('Información de frames cargada desde .info')} ({len(qp_values)} frames)"
                 )
             else:
                 print(f"No se pudieron cargar datos válidos desde {info_file}")
