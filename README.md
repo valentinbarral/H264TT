@@ -25,9 +25,11 @@ The H264TT GUI is designed for educational exploration of the H.264 codec.
 
 ## FFmpeg compatibility
 
-This project is designed around FFmpeg 6.1.
+This project was originally works with FFmpeg 6.1 and later.
 
-Later versions may work, but low-level debug output and internals are not guaranteed to behave identically. Use FFmpeg 6.1 for consistent macroblock analysis results.
+The macroblock analysis parses the text that the H.264 decoder prints with `-debug mb_type`.
+
+The CLI prints a warning if a frame's macroblock count does not match the video dimensions, which is the symptom of a future log-format change. In that case check the generated `*_mb_types.txt` before trusting the statistics.
 
 For convenience, prebuilt static binaries for Windows and Linux are included in the GitHub releases. These binaries are distributed under the *GNU General Public License (GPL)* because they were built with GPL-enabled components (including libx264). See [FFmpeg / FFprobe](#ffmpeg--ffprobe) for more details on licensing and usage.
 

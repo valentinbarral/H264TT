@@ -56,6 +56,20 @@ def create_yuv_from_mp4(
         return False
 
 
+
+def _is_mb_column_header(tokens, first_line):
+    """¿Es esta línea solo numérica la cabecera de columnas de FFmpeg >= 7?
+
+    La cabecera es "0 64 128 ..." (o "0 128 256 ..." en vídeos de más de 999
+    píxeles de ancho). Las filas del formato numérico antiguo solo tienen 0, 1
+    y 2, así que cualquier otro valor delata la cabecera. El único caso que se
+    confunde es "0" a secas (vídeos de hasta 64 píxeles de ancho): se toma como
+    cabecera solo si es la primera línea tras "New frame".
+    """
+    if any(t not in ("0", "1", "2") for t in tokens):
+        return True
+    return first_line and tokens == ["0"]
+
 class MBVisualizer:
     def __init__(
         self,
@@ -148,15 +162,10 @@ class MBVisualizer:
 
         version_output = result.stdout.splitlines()[0] if result.stdout else ""
         if "ffmpeg version" in version_output:
+            # El formato del log "-debug mb_type" cambió en FFmpeg 7.0 (cabecera
+            # de columnas y etiquetas de fila); _parse_mb_log_frames admite
+            # ambos, y generate_analysis_sidecar avisa si el log no cuadra.
             print(f"FFmpeg detectado: {version_output}")
-
-            major_version_match = re.search(r"ffmpeg version (\d+)", version_output)
-            if major_version_match:
-                major_version = int(major_version_match.group(1))
-                if major_version > 6:
-                    print(
-                        "⚠️  Aviso: esta herramienta está pensada para FFmpeg 6.1.1; versiones más nuevas pueden no exponer igual los datos de bajo nivel."
-                    )
 
     def encode_video(self):
         self.run_step("Codificando video con parámetros definidos")
@@ -738,43 +747,19 @@ class MBVisualizer:
 
         print(f"[Listo] Gráficas QP/SIZE guardadas: {plot_file}")
 
-    def get_mb_category(self, token):
+    def _classify_mb_symbol(self, token):
         """
-        Determina el color basado en el caracter del macrobloque.
-        Basado en la salida ASCII típica de libx264/ffmpeg debug.
+        Clasifica un token de '-debug mb_type' como "INTRA", "SKIP" o "INTER".
+
+        Se distingue entre mayúsculas y minúsculas, como hace FFmpeg
+        (libavcodec/mpegutils.c). Solo importa el primer carácter; el segundo
+        indica la partición (+, -, |) y no cambia la categoría:
+          P, A, i, I -> intra (PCM, intra con ACPRED, intra 4x4, intra 16x16)
+          S, d, g    -> skip (P skip, B direct+skip, GMC+skip)
+          D, G, >, <, X -> inter (direct, GMC, hacia delante, hacia atrás, bi)
+        Es la misma clasificación que usa la interfaz gráfica.
         """
-        if isinstance(token, int) or (isinstance(token, str) and token.isdigit()):
-            token_value = int(token)
-            if token_value == 0:
-                return self.colors["SKIP"]
-            if token_value == 2:
-                return self.colors["INTRA"]
-            return self.colors["INTER"]
-
-        t = str(token).upper()
-
-        # Intra: I, i
-        if "I" in t:
-            return self.colors["INTRA"]
-
-        # Skip: S (en frames P), s
-        if "S" in t or any(c in t for c in ["D", "G"]):
-            return self.colors["SKIP"]
-
-        # Inter: d, D, <, >, X, etc.
-        # d/D: 16x16
-        # < >: particiones rectangulares 16x8 / 8x16
-        # X: 8x8
-        if any(c in t for c in ["D", "X", "<", ">", "+", "-", "|"]):
-            return self.colors["INTER"]
-
-        # Para casos no identificados, asumir INTER (más común)
-        return self.colors["INTER"]
-
-    def get_mb_type_name(self, token):
-        """
-        Devuelve el nombre de la categoría del macrobloque como string.
-        """
+        # Formato numérico antiguo: 0 = skip, 2 = intra, resto = inter
         if isinstance(token, int) or (isinstance(token, str) and token.isdigit()):
             token_value = int(token)
             if token_value == 0:
@@ -783,22 +768,20 @@ class MBVisualizer:
                 return "INTRA"
             return "INTER"
 
-        t = str(token).upper()
-
-        # Intra: I, i
-        if "I" in t:
+        first = str(token)[:1]
+        if first in ("P", "A", "i", "I"):
             return "INTRA"
-
-        # Skip: S (en frames P), s
-        if "S" in t or any(c in t for c in ["D", "G"]):
+        if first in ("S", "d", "g"):
             return "SKIP"
-
-        # Inter: d, D, <, >, X, etc.
-        if any(c in t for c in ["D", "X", "<", ">", "+", "-", "|"]):
-            return "INTER"
-
-        # Para casos no identificados, asumir INTER (más común)
         return "INTER"
+
+    def get_mb_category(self, token):
+        """Devuelve el color BGR de la categoría del macrobloque."""
+        return self.colors[self._classify_mb_symbol(token)]
+
+    def get_mb_type_name(self, token):
+        """Devuelve el nombre de la categoría del macrobloque como string."""
+        return self._classify_mb_symbol(token)
 
     def print_legend(self):
         """Imprime una leyenda explicativa de los símbolos al final del proceso."""
@@ -852,6 +835,7 @@ class MBVisualizer:
         frames_data = []
         current_frame_data = {"type": None, "tokens": []}
         regex_prefix = re.compile(r"^\[.*?\]\s*")
+        header_pending = False  # la próxima línea candidata puede ser la cabecera
 
         with open(self.log_file, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -869,6 +853,7 @@ class MBVisualizer:
                         current_frame_data = {"type": None, "tokens": []}
 
                     if "New frame" in clean:
+                        header_pending = True
                         type_match = re.search(r"type:\s*([IPB])", clean, re.IGNORECASE)
                         if type_match:
                             frame_type = type_match.group(1).upper()
@@ -894,6 +879,21 @@ class MBVisualizer:
                     continue
 
                 tokens = clean.split()
+                first_line, header_pending = header_pending, False
+
+                # FFmpeg >= 7.0 imprime, justo tras "New frame", una cabecera de
+                # columnas ("0  64 128 ...": la x de cada 4 u 8 macrobloques) y
+                # antepone a cada fila su coordenada y ("16 i  i  I ..."). FFmpeg
+                # 6.x no lo hace. Misma regla que el analizador de la interfaz
+                # (ver _is_mb_column_header).
+                if tokens and all(t.isdigit() for t in tokens):
+                    if _is_mb_column_header(tokens, first_line):
+                        continue  # cabecera de columnas
+                    # si no, fila del formato numérico antiguo (0/1/2): se conserva
+                elif tokens and tokens[0].isdigit():
+                    tokens = tokens[1:]  # etiqueta de fila (coordenada y)
+                    clean = " ".join(tokens)
+
                 skip_words = [
                     "No",
                     "automatically",
@@ -954,8 +954,11 @@ class MBVisualizer:
         motion_vectors = self.frame_data.get("motion_vectors", [])
         qp_frame_types = self.frame_stats.get("frame_types", [])
 
+        mismatched_frames = 0
         for idx, frame_data in enumerate(frames_data):
             tokens = frame_data.get("tokens", [])
+            if len(tokens) != rows * cols:
+                mismatched_frames += 1
             frame_type = qp_frame_types[idx] if idx < len(qp_frame_types) else None
             if frame_type is None:
                 frame_type = frame_data.get("type")
@@ -1001,6 +1004,14 @@ class MBVisualizer:
                     "blocks": tokens,
                     "mb_stats": mb_stats,
                 }
+            )
+
+        if mismatched_frames:
+            print(
+                f"⚠️  {mismatched_frames} de {len(frames_data)} frames no tienen "
+                f"{rows * cols} macrobloques ({cols}x{rows}) en el log de FFmpeg. "
+                "El formato de '-debug mb_type' puede haber cambiado en esta versión "
+                f"de FFmpeg; revisa {self.log_file} antes de fiarte de las estadísticas."
             )
 
         self.frame_stats["by_type"] = type_counter

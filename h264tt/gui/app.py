@@ -3151,6 +3151,12 @@ class VideoPlayerWidget(QWidget):
             self.frame_mb_data = []
             current_frame_data = None
             frame_counter = 0
+            # Columnas esperadas, para aceptar filas cortas de vídeos estrechos
+            self._mb_expected_cols = None
+            if self.cap:
+                width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                if width > 0:
+                    self._mb_expected_cols = (width + 15) // 16
 
             lines = debug_output.split("\n")
             for line in lines:
@@ -3180,6 +3186,7 @@ class VideoPlayerWidget(QWidget):
                         "frame_idx": frame_counter,
                     }
                     frame_counter += 1
+                    self._mb_header_pending = True
 
                 # Extraer tokens de macrobloques desde debug output
                 elif current_frame_data is not None:
@@ -3306,9 +3313,30 @@ class VideoPlayerWidget(QWidget):
         # Dividir la línea por espacios para obtener símbolos individuales
         symbols = line.split()
 
-        # Verificar que la línea contenga principalmente símbolos de un solo caracter
-        # Las líneas válidas de MB tienen muchos símbolos de 1-2 caracteres
-        if len(symbols) < 5:  # Líneas muy cortas probablemente no son MB
+        first_line = getattr(self, "_mb_header_pending", False)
+        self._mb_header_pending = False
+
+        # FFmpeg >= 7.0 imprime, justo tras "New frame", una cabecera de columnas
+        # ("0  64 128 ...": la x de cada 4 u 8 macrobloques) y antepone a cada
+        # fila su coordenada y ("16 i  i  I ..."). FFmpeg 6.x no lo hace. Sin este
+        # filtro la etiqueta "0" se confundía con un macrobloque SKIP y toda la
+        # rejilla se desplazaba.
+        if symbols and all(s.isdigit() for s in symbols):
+            # Las filas del formato numérico antiguo solo tienen 0, 1 y 2. La
+            # cabecera de un vídeo de hasta 64 px de ancho es "0" a secas: solo se
+            # toma como cabecera si es la primera línea tras "New frame".
+            if any(s not in ("0", "1", "2") for s in symbols):
+                return None  # cabecera de columnas
+            if first_line and symbols == ["0"]:
+                return None  # cabecera de columnas de un vídeo estrecho
+        elif symbols and symbols[0].isdigit():
+            symbols = symbols[1:]  # etiqueta de fila (coordenada y)
+
+        # Las líneas válidas de MB tienen muchos símbolos de 1-2 caracteres. Las
+        # muy cortas se descartan, salvo que el vídeo sea así de estrecho.
+        expected_cols = getattr(self, "_mb_expected_cols", None)
+        min_symbols = min(5, expected_cols) if expected_cols else 5
+        if len(symbols) < min_symbols:
             return None
 
         # Contar cuántos símbolos tienen longitud razonable para MB (1-3 caracteres)
