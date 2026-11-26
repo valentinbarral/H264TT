@@ -2342,6 +2342,15 @@ class VideoPlayerWidget(QWidget):
             "total_frames": 0,
         }
 
+        # Zoom del vídeo: 1.0 = ajustado al área; >1 acerca. view_center es el
+        # punto del frame (en píxeles) que queda en el centro del área.
+        self.zoom_rel = 1.0
+        self.view_center = None
+        self._view_geom = None
+        self._fit_scale = 1.0
+        self._pan_last = None
+        self._zoom_actual = False  # modo 1:1: se mantiene al redimensionar
+
         # Timer para reproducción
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._next_frame)
@@ -2436,6 +2445,40 @@ class VideoPlayerWidget(QWidget):
 
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
+
+        # Controles de zoom (útil con vídeos verticales o pequeños, donde los
+        # macrobloques se ven diminutos al ajustar el frame al área)
+        zoom_layout = QHBoxLayout()
+        self.zoom_title_label = QLabel(_("Zoom:"))
+        zoom_layout.addWidget(self.zoom_title_label)
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(10, 160)  # décimas; el rango real depende del ajuste
+        self.zoom_slider.setValue(10)
+        self.zoom_slider.setMaximumWidth(220)
+        self.zoom_slider.setToolTip(
+            _("Zoom del vídeo. También con la rueda del ratón; arrastra para mover y doble clic para ajustar.")
+        )
+        self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
+        zoom_layout.addWidget(self.zoom_slider)
+        self.zoom_label = QLabel("1.0×")
+        self.zoom_label.setMinimumWidth(110)
+        self.zoom_label.setToolTip(
+            _("Entre paréntesis, el tamaño respecto al vídeo original (100% = un píxel de vídeo por píxel de pantalla).")
+        )
+        zoom_layout.addWidget(self.zoom_label)
+        self.zoom_fit_btn = QPushButton(_("Ajustar"))
+        self.zoom_fit_btn.setToolTip(_("Ajusta el vídeo al área disponible"))
+        self.zoom_fit_btn.clicked.connect(self.reset_zoom)
+        zoom_layout.addWidget(self.zoom_fit_btn)
+        self.zoom_actual_btn = QPushButton("1:1")
+        self.zoom_actual_btn.setToolTip(
+            _("Muestra el vídeo a tamaño real (un píxel de vídeo por píxel de pantalla)")
+        )
+        self.zoom_actual_btn.clicked.connect(self.zoom_to_actual_size)
+        zoom_layout.addWidget(self.zoom_actual_btn)
+        zoom_layout.addStretch()
+        layout.addLayout(zoom_layout)
+        self.video_label.installEventFilter(self)
 
         # Panel de información separado para el inspector derecho
         self.info_panel = self._create_info_panel()
@@ -2770,6 +2813,18 @@ class VideoPlayerWidget(QWidget):
         self.motion_vectors_check.setToolTip(_("Muestra los vectores de movimiento extraídos del bitstream H.264."))
         self.opacity_title_label.setText(_("Opacidad:"))
         self.opacity_slider.setToolTip(_("Ajusta la transparencia del overlay"))
+        self.zoom_title_label.setText(_("Zoom:"))
+        self.zoom_fit_btn.setText(_("Ajustar"))
+        self.zoom_fit_btn.setToolTip(_("Ajusta el vídeo al área disponible"))
+        self.zoom_actual_btn.setToolTip(
+            _("Muestra el vídeo a tamaño real (un píxel de vídeo por píxel de pantalla)")
+        )
+        self.zoom_slider.setToolTip(
+            _("Zoom del vídeo. También con la rueda del ratón; arrastra para mover y doble clic para ajustar.")
+        )
+        self.zoom_label.setToolTip(
+            _("Entre paréntesis, el tamaño respecto al vídeo original (100% = un píxel de vídeo por píxel de pantalla).")
+        )
         self.frame_title_label.setText(_("Frame:"))
         self.frame_type_title_label.setText(_("Tipo:"))
         self.frame_qp_title_label.setText(f"{_('QP medio')}:")
@@ -2952,6 +3007,8 @@ class VideoPlayerWidget(QWidget):
             # Configurar slider
             self.position_slider.setRange(0, self.total_frames - 1)
             self.position_slider.setValue(0)
+
+            self._reset_zoom_state()
 
             # Ir al primer frame
             self.current_frame = 0
@@ -3480,6 +3537,153 @@ class VideoPlayerWidget(QWidget):
         if self.info_panel.isVisible():
             self._update_frame_info()
 
+    def _redraw_video(self):
+        """Redibuja el frame actual sin cambiar de frame ni emitir señales."""
+        if self.cap and self.current_frame_data is not None:
+            self._paint_frame(self.current_frame_data)
+
+    def _render_zoomed(self, frame, label_size, fit_scale):
+        """Recorta la zona visible del frame y la escala. Devuelve (imagen, escala)."""
+        frame_h, frame_w = frame.shape[:2]
+        vw, vh = max(1, label_size.width()), max(1, label_size.height())
+        scale = fit_scale * self.zoom_rel
+        view_w, view_h = vw / scale, vh / scale
+        cx, cy = self.view_center or (frame_w / 2, frame_h / 2)
+        # La vista no puede salirse del frame; si cabe entera en un eje, se centra
+        cx = frame_w / 2 if view_w >= frame_w else min(max(cx, view_w / 2), frame_w - view_w / 2)
+        cy = frame_h / 2 if view_h >= frame_h else min(max(cy, view_h / 2), frame_h - view_h / 2)
+        self.view_center = (cx, cy)
+        x0 = int(round(max(0, cx - view_w / 2)))
+        x1 = int(round(min(frame_w, cx + view_w / 2)))
+        y0 = int(round(max(0, cy - view_h / 2)))
+        y1 = int(round(min(frame_h, cy + view_h / 2)))
+        crop = frame[y0:y1, x0:x1]
+        out_w = max(1, min(vw, int(round((x1 - x0) * scale))))
+        out_h = max(1, min(vh, int(round((y1 - y0) * scale))))
+        if scale >= 2:
+            interp = cv2.INTER_NEAREST  # píxeles nítidos para ver los bloques
+        elif scale < 1:
+            interp = cv2.INTER_AREA
+        else:
+            interp = cv2.INTER_LINEAR
+        self._view_geom = (cx, cy, scale, vw, vh)
+        return cv2.resize(crop, (out_w, out_h), interpolation=interp), scale
+
+    def _zoom_limits(self):
+        """Límites del zoom relativo al ajuste. Siempre incluyen el tamaño real
+        (1:1), también cuando el ajuste ya está por encima del 100% (vídeo
+        pequeño: hace falta < 1x) o muy por debajo (vídeo grande: hace falta
+        mucho más de 16x)."""
+        fit = self._fit_scale if self._fit_scale > 0 else 1.0
+        return min(1.0, 1.0 / fit), max(16.0, 4.0 / fit)
+
+    def _update_zoom_limits(self):
+        lo, hi = self._zoom_limits()
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setRange(max(1, int(lo * 10)), int(hi * 10) + 1)
+        self.zoom_slider.setValue(int(round(self.zoom_rel * 10)))
+        self.zoom_slider.blockSignals(False)
+
+    def _update_zoom_label(self, scale):
+        self.zoom_label.setText(f"{self.zoom_rel:.1f}× ({scale * 100:.0f}%)")
+
+    def _on_zoom_slider_changed(self, value):
+        self.set_zoom(value / 10.0)
+
+    def set_zoom(self, zoom_rel, anchor=None):
+        """Cambia el zoom (1.0 = ajustar). anchor es la posición del cursor en el área
+        de vídeo: el punto del frame que hay bajo él se mantiene en su sitio."""
+        self._zoom_actual = False  # cualquier otro zoom sale del modo 1:1
+        lo, hi = self._zoom_limits()
+        zoom_rel = max(lo, min(hi, float(zoom_rel)))
+        geom = self._view_geom
+        if anchor is not None and geom is not None and zoom_rel > 1.0:
+            cx, cy, scale, vw, vh = geom
+            px, py = anchor
+            src_x = cx + (px - vw / 2) / scale
+            src_y = cy + (py - vh / 2) / scale
+            new_scale = scale * zoom_rel / self.zoom_rel
+            self.view_center = (
+                src_x - (px - vw / 2) / new_scale,
+                src_y - (py - vh / 2) / new_scale,
+            )
+        self.zoom_rel = zoom_rel
+        if zoom_rel <= 1.0:
+            self.view_center = None
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(int(round(zoom_rel * 10)))
+        self.zoom_slider.blockSignals(False)
+        self.video_label.setCursor(
+            Qt.OpenHandCursor if zoom_rel > 1.0 else Qt.ArrowCursor
+        )
+        self._redraw_video()
+
+    def reset_zoom(self):
+        """Ajusta el vídeo al área disponible."""
+        self.view_center = None
+        self.set_zoom(1.0)
+
+    def zoom_to_actual_size(self):
+        """Tamaño real: un píxel de vídeo por píxel de pantalla."""
+        if self.cap and self._fit_scale > 0:
+            self.set_zoom(1.0 / self._fit_scale)
+            self._zoom_actual = True
+
+    def _reset_zoom_state(self):
+        self.zoom_rel = 1.0
+        self._zoom_actual = False
+        self.view_center = None
+        self._pan_last = None
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(10)
+        self.zoom_slider.blockSignals(False)
+        self.video_label.setCursor(Qt.ArrowCursor)
+
+    def eventFilter(self, obj, event):
+        """Rueda = zoom bajo el cursor; arrastrar = mover; doble clic = ajustar."""
+        from PyQt5.QtCore import QEvent
+
+        if obj is self.video_label and self.cap:
+            etype = event.type()
+            if etype == QEvent.Wheel:
+                steps = event.angleDelta().y() / 120.0
+                if steps:
+                    pos = event.pos()
+                    self.set_zoom(
+                        self.zoom_rel * (1.15**steps), anchor=(pos.x(), pos.y())
+                    )
+                return True
+            if etype == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+                self.reset_zoom()
+                return True
+            if (
+                etype == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton
+                and self.zoom_rel > 1.0
+            ):
+                self._pan_last = event.pos()
+                self.video_label.setCursor(Qt.ClosedHandCursor)
+                return True
+            if etype == QEvent.MouseMove and self._pan_last is not None:
+                pos = event.pos()
+                geom = self._view_geom
+                if geom is not None and self.view_center is not None:
+                    scale = geom[2]
+                    dx = (pos.x() - self._pan_last.x()) / scale
+                    dy = (pos.y() - self._pan_last.y()) / scale
+                    self.view_center = (
+                        self.view_center[0] - dx,
+                        self.view_center[1] - dy,
+                    )
+                    self._redraw_video()
+                self._pan_last = pos
+                return True
+            if etype == QEvent.MouseButtonRelease and self._pan_last is not None:
+                self._pan_last = None
+                self.video_label.setCursor(Qt.OpenHandCursor)
+                return True
+        return super().eventFilter(obj, event)
+
     def _refresh_display(self):
         """Refresca la visualización del frame actual sin cambiar de frame."""
         if not self.cap or self.current_frame_data is None:
@@ -3494,6 +3698,23 @@ class VideoPlayerWidget(QWidget):
 
     def _show_frame(self, frame):
         """Muestra un frame dado aplicando overlay si es necesario."""
+        self._paint_frame(frame)
+
+        # Actualizar slider y tiempo
+        self.position_slider.blockSignals(True)
+        self.position_slider.setValue(self.current_frame)
+        self.position_slider.blockSignals(False)
+
+        self._update_time_display()
+        self._update_frame_badge()
+        self.frameChanged.emit(self.current_frame)
+
+    def _paint_frame(self, frame):
+        """Dibuja el frame (con overlay y zoom) en el área de vídeo.
+
+        No toca el slider ni emite señales, así que sirve también para
+        redibujar al hacer zoom o desplazar la imagen.
+        """
         # IMPORTANTE: Aplicar overlay ANTES de convertir a RGB
         # El overlay usa colores BGR (formato OpenCV)
 
@@ -3507,6 +3728,33 @@ class VideoPlayerWidget(QWidget):
                 frame, self.frame_mb_data[self.current_frame]
             )
 
+        frame_h, frame_w = frame.shape[:2]
+        label_size = self.video_label.size()
+        fit_scale = min(label_size.width() / frame_w, label_size.height() / frame_h)
+        self._fit_scale = fit_scale
+        if fit_scale > 0:
+            if self._zoom_actual:
+                # En 1:1 lo que se conserva es la escala (100%), no el
+                # multiplicador: al cambiar el tamaño del área se recalcula
+                self.zoom_rel = 1.0 / fit_scale
+            lo, hi = self._zoom_limits()
+            self.zoom_rel = max(lo, min(hi, self.zoom_rel))
+            self._update_zoom_limits()
+        zoomed = abs(self.zoom_rel - 1.0) > 1e-9 and fit_scale > 0
+        if zoomed:
+            # Solo se recorta y escala la zona visible: rápido incluso con zoom alto
+            frame, scale = self._render_zoomed(frame, label_size, fit_scale)
+        else:
+            scale = fit_scale
+            self._view_geom = (
+                frame_w / 2,
+                frame_h / 2,
+                fit_scale,
+                label_size.width(),
+                label_size.height(),
+            )
+        self._update_zoom_label(scale)
+
         # Ahora convertir BGR a RGB para Qt
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -3517,21 +3765,14 @@ class VideoPlayerWidget(QWidget):
             QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
         )
 
-        # Escalar manteniendo aspect ratio
-        label_size = self.video_label.size()
-        scaled_pixmap = q_img.scaled(
-            label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
+        if zoomed:
+            scaled_pixmap = q_img  # ya tiene el tamaño final
+        else:
+            # Escalar manteniendo aspect ratio
+            scaled_pixmap = q_img.scaled(
+                label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
         self.video_label.setPixmap(scaled_pixmap)
-
-        # Actualizar slider y tiempo
-        self.position_slider.blockSignals(True)
-        self.position_slider.setValue(self.current_frame)
-        self.position_slider.blockSignals(False)
-
-        self._update_time_display()
-        self._update_frame_badge()
-        self.frameChanged.emit(self.current_frame)
 
     def _apply_mb_overlay(self, frame, mb_frame_data):
         """Aplica overlay de macrobloques al frame con el nuevo sistema de tipos."""
